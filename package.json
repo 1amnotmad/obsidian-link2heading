@@ -1,0 +1,29 @@
+{
+	"name": "obsidian-link2heading",
+	"version": "1.0.0",
+	"description": "Obsidian plugin that automatically creates headings when following links to non-existent headings",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "jest",
+		"test:coverage": "jest --coverage"
+	},
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin"
+	],
+	"author": "1amnotmad",
+	"license": "MIT",
+	"devDependencies": {
+		"@types/jest": "^30.0.0",
+		"@types/node": "^22.0.0",
+		"builtin-modules": "^4.0.0",
+		"esbuild": "^0.25.0",
+		"jest": "^30.2.0",
+		"obsidian": "latest",
+		"ts-jest": "^29.4.6",
+		"tslib": "^2.8.0",
+		"typescript": "^5.7.0"
+	}
+}

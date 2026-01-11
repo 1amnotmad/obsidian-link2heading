@@ -1,0 +1,24 @@
+# Build output
+main.js
+
+# npm
+node_modules
+package-lock.json
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Obsidian
+data.json
+
+# Test coverage
+coverage/
+
+# Claude
+.claude/
