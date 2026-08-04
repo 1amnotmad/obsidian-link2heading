@@ -111,7 +111,7 @@ export function parseLinkWithHeading(
 
 	const resolvedPath = resolveFile(filePart || "", sourcePath);
 	return {
-		file: resolvedPath || filePart || "",
+		file: resolvedPath || filePart || sourcePath,
 		heading: decodeURIComponent(headingPart),
 	};
 }

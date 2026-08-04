@@ -267,7 +267,7 @@ describe("parseLinkWithHeading", () => {
 		const result = parseLinkWithHeading("#heading", "source.md", () => null);
 
 		expect(result).toEqual({
-			file: "",
+			file: "source.md",
 			heading: "heading",
 		});
 	});

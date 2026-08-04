@@ -130,17 +130,13 @@ function parseLinkWithHeading(linktext, sourcePath, resolveFile) {
   if (!headingPart) return null;
   const resolvedPath = resolveFile(filePart || "", sourcePath);
   return {
-    file: resolvedPath || filePart || "",
+    file: resolvedPath || filePart || sourcePath,
     heading: decodeURIComponent(headingPart)
   };
 }
 
 // main.ts
 var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
-  constructor() {
-    super(...arguments);
-    this.pendingHeading = null;
-  }
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new Link2HeadingSettingTab(this.app, this));
@@ -150,29 +146,16 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
         var _a;
         return ((_a = this.app.metadataCache.getFirstLinkpathDest(linkPath, srcPath)) == null ? void 0 : _a.path) || null;
       });
-      if (parsed) this.pendingHeading = parsed;
-      return originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+      await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+      if (!parsed) return;
+      const view = this.findMarkdownView(parsed.file);
+      if (view == null ? void 0 : view.file) {
+        await this.handleHeadingNavigation(view.file, parsed.heading, view);
+      }
     };
     this.register(() => {
       this.app.workspace.openLinkText = originalOpenLinkText;
     });
-    this.registerEvent(
-      this.app.workspace.on("file-open", async (file) => {
-        if (!file || !this.pendingHeading) return;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        const isExpectedFile = this.pendingHeading.file === file.path || file.path.endsWith(this.pendingHeading.file + ".md") || this.pendingHeading.file === file.basename;
-        if (!isExpectedFile) {
-          this.pendingHeading = null;
-          return;
-        }
-        const headingText = this.pendingHeading.heading;
-        this.pendingHeading = null;
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
-        if ((view == null ? void 0 : view.file) === file) {
-          await this.handleHeadingNavigation(file, headingText, view);
-        }
-      })
-    );
   }
   onunload() {
   }
@@ -181,6 +164,17 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  findMarkdownView(filePath) {
+    const isExpectedFile = (file) => filePath === file.path || file.path.endsWith(filePath + ".md") || filePath === file.basename;
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
+    if ((activeView == null ? void 0 : activeView.file) && isExpectedFile(activeView.file)) return activeView;
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      if (leaf.view instanceof import_obsidian2.MarkdownView && leaf.view.file && isExpectedFile(leaf.view.file)) {
+        return leaf.view;
+      }
+    }
+    return null;
   }
   async handleHeadingNavigation(file, headingText, view) {
     const cache = this.app.metadataCache.getFileCache(file);
