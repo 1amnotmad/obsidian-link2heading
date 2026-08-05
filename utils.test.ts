@@ -2,6 +2,7 @@ jest.mock("obsidian", () => ({
 	AbstractInputSuggest: class {},
 	PluginSettingTab: class {},
 	Setting: class {},
+	TFolder: class {},
 	prepareFuzzySearch: jest.fn(),
 	setIcon: jest.fn(),
 }), { virtual: true });
@@ -12,17 +13,19 @@ import {
 	findInsertionPoint,
 	buildHeadingText,
 	parseLinkWithHeading,
+	parseHeadingValue,
 	resolveHeadingSettings,
 	EditorLike,
 } from "./utils";
 import { parseSettingsData } from "./settings";
 import type { HeadingCache } from "obsidian";
 import type {
+	FileRule,
 	FolderRule,
 	FrontmatterRule,
 	HeadingRule,
+	HeadingRuleEntry,
 	HeadingRuleBehavior,
-	PathRule,
 	RuleFallback,
 } from "./settings";
 
@@ -36,12 +39,16 @@ function behavior(parentHeading: string): HeadingRuleBehavior {
 	};
 }
 
-function pathRule(path: string, parentHeading: string): PathRule {
-	return { ...behavior(parentHeading), matchType: "path", path };
+function fileRule(path: string, parentHeading: string): FileRule {
+	return { ...behavior(parentHeading), matchType: "file", path };
 }
 
 function folderRule(folder: string, parentHeading: string): FolderRule {
 	return { ...behavior(parentHeading), matchType: "folder", folder };
+}
+
+function headingRule(heading: string, parentHeading: string): HeadingRule {
+	return { ...behavior(parentHeading), matchType: "heading", heading };
 }
 
 function frontmatterRule(
@@ -85,20 +92,20 @@ describe("parseSettingsData", () => {
 	it("uses fresh defaults for missing and legacy settings", () => {
 		expect(parseSettingsData(null)).toEqual({ rules: [], fallback: { mode: "none" } });
 		expect(parseSettingsData({
-			parentHeading: "Notes",
+			parentHeading: "## Notes",
 			headingLevel: "h2",
 			missingParentBehavior: "create",
 		})).toEqual({ rules: [], fallback: { mode: "none" } });
 	});
 
-	it("keeps valid rules, discards malformed rules, and normalizes behavior values", () => {
+	it("keeps valid rules, migrates path rules, discards malformed rules, and normalizes behavior values", () => {
 		const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
 		const settings = parseSettingsData({
 			rules: [
 				{
 					matchType: "path",
 					path: "Projects/Meeting",
-					parentHeading: "Notes",
+					parentHeading: "## Notes",
 					headingLevel: "h9",
 					missingParentBehavior: "invalid",
 				},
@@ -117,9 +124,9 @@ describe("parseSettingsData", () => {
 
 		expect(settings).toEqual({
 			rules: [{
-				matchType: "path",
+				matchType: "file",
 				path: "Projects/Meeting",
-				parentHeading: "Notes",
+				parentHeading: "## Notes",
 				headingLevel: "auto",
 				missingParentBehavior: "top",
 			}],
@@ -137,6 +144,38 @@ describe("parseSettingsData", () => {
 		warn.mockRestore();
 	});
 
+	it("loads heading rules only when the heading field exists", () => {
+		const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+		const settings = parseSettingsData({
+			rules: [
+				{
+					matchType: "heading",
+					heading: "### Events by date",
+					parentHeading: "## 2024 Events",
+					headingLevel: "auto",
+					missingParentBehavior: "create",
+				},
+				{
+					matchType: "heading",
+					parentHeading: "",
+					headingLevel: "auto",
+					missingParentBehavior: "top",
+				},
+			],
+			fallback: { mode: "none" },
+		});
+
+		expect(settings.rules).toEqual([{
+			matchType: "heading",
+			heading: "### Events by date",
+			parentHeading: "## 2024 Events",
+			headingLevel: "auto",
+			missingParentBehavior: "create",
+		}]);
+		expect(warn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
 	it("resets a malformed Global fallback to Do Nothing", () => {
 		const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
 		expect(parseSettingsData({
@@ -146,6 +185,24 @@ describe("parseSettingsData", () => {
 		expect(warn).toHaveBeenCalledTimes(1);
 		warn.mockRestore();
 	});
+});
+
+describe("parseHeadingValue", () => {
+	it.each([
+		["# Notes", { level: 1, text: "Notes" }],
+		["## Notes", { level: 2, text: "Notes" }],
+		["### Events by date", { level: 3, text: "Events by date" }],
+		["#### Case Sensitive ", { level: 4, text: "Case Sensitive " }],
+	])("parses %p", (value, expected) => {
+		expect(parseHeadingValue(value)).toEqual(expected);
+	});
+
+	it.each(["", "Notes", "#", "##", "# ", "### ", "##Notes", " ## Notes"])(
+		"rejects malformed value %p",
+		(value) => {
+			expect(parseHeadingValue(value)).toBeNull();
+		}
+	);
 });
 
 describe("getLineAfterFrontmatter", () => {
@@ -255,7 +312,7 @@ describe("findInsertionPoint", () => {
 			createMockHeading("Title", 1, 0),
 			createMockHeading("Notes", 2, 1),
 		];
-		const settings = { ...defaultSettings, parentHeading: "Notes" };
+		const settings = { ...defaultSettings, parentHeading: "## Notes" };
 
 		const result = findInsertionPoint(editor, headings, settings);
 
@@ -266,21 +323,35 @@ describe("findInsertionPoint", () => {
 		});
 	});
 
-	it("is case-insensitive for parent heading matching", () => {
+	it("matches parent headings case-sensitively", () => {
 		const editor = createMockEditor(["## NOTES", "Content"]);
 		const headings = [createMockHeading("NOTES", 2, 0)];
-		const settings = { ...defaultSettings, parentHeading: "notes" };
+		const settings = { ...defaultSettings, parentHeading: "## NOTES" };
 
 		const result = findInsertionPoint(editor, headings, settings);
 
 		expect(result?.parentLevel).toBe(2);
 	});
 
+	it("does not match a parent with different case or level", () => {
+		const editor = createMockEditor(["## Notes", "Content"]);
+		const headings = [createMockHeading("Notes", 2, 0)];
+
+		expect(findInsertionPoint(editor, headings, {
+			...defaultSettings,
+			parentHeading: "## notes",
+		})?.parentLevel).toBeNull();
+		expect(findInsertionPoint(editor, headings, {
+			...defaultSettings,
+			parentHeading: "### Notes",
+		})?.parentLevel).toBeNull();
+	});
+
 	it("returns top when parent not found and behavior is 'top'", () => {
 		const editor = createMockEditor(["# Title", "Content"]);
 		const settings = {
 			...defaultSettings,
-			parentHeading: "Notes",
+			parentHeading: "## Notes",
 			missingParentBehavior: "top" as const,
 		};
 
@@ -297,7 +368,7 @@ describe("findInsertionPoint", () => {
 		const editor = createMockEditor(["# Title", "Content"]);
 		const settings = {
 			...defaultSettings,
-			parentHeading: "Notes",
+			parentHeading: "## Notes",
 			missingParentBehavior: "create" as const,
 		};
 
@@ -305,8 +376,23 @@ describe("findInsertionPoint", () => {
 
 		expect(result).toEqual({
 			insertionPoint: { line: 0, ch: 0 },
-			parentLevel: null,
+			parentLevel: 2,
 			needsParentCreation: true,
+		});
+	});
+
+	it("does not create a malformed parent heading", () => {
+		const editor = createMockEditor(["# Title", "Content"]);
+		const settings = {
+			...defaultSettings,
+			parentHeading: "Notes",
+			missingParentBehavior: "create" as const,
+		};
+
+		expect(findInsertionPoint(editor, [], settings)).toEqual({
+			insertionPoint: { line: 0, ch: 0 },
+			parentLevel: null,
+			needsParentCreation: false,
 		});
 	});
 
@@ -314,7 +400,7 @@ describe("findInsertionPoint", () => {
 		const editor = createMockEditor(["# Title", "Content"]);
 		const settings = {
 			...defaultSettings,
-			parentHeading: "Notes",
+			parentHeading: "## Notes",
 			missingParentBehavior: "none" as const,
 		};
 
@@ -325,17 +411,17 @@ describe("findInsertionPoint", () => {
 });
 
 describe("resolveHeadingSettings", () => {
-	describe("path rules", () => {
+	describe("file rules", () => {
 		it("matches exact paths with optional .md and normalized slashes", () => {
-			const rules = [pathRule(" /Projects\\Active//Meeting.md ", "Path")];
+			const rules = [fileRule(" /Projects\\Active//Meeting.md ", "File")];
 
 			expect(resolveHeadingSettings(
 				{ path: "Projects/Active/Meeting.md" }, null, rules, noFallback
-			)).toEqual(behavior("Path"));
+			)).toEqual(behavior("File"));
 		});
 
 		it("uses the full path for same-name notes", () => {
-			const rules = [pathRule("Archive/Meeting", "Archive")];
+			const rules = [fileRule("Archive/Meeting", "Archive")];
 
 			expect(resolveHeadingSettings(
 				{ path: "Projects/Meeting.md" }, null, rules, noFallback
@@ -344,9 +430,9 @@ describe("resolveHeadingSettings", () => {
 
 		it("skips empty criteria and uses the first matching rule", () => {
 			const rules = [
-				pathRule("", "Empty"),
-				pathRule("Note", "First"),
-				pathRule("Note.md", "Second"),
+				fileRule("", "Empty"),
+				fileRule("Note", "First"),
+				fileRule("Note.md", "Second"),
 			];
 
 			expect(resolveHeadingSettings(
@@ -354,19 +440,23 @@ describe("resolveHeadingSettings", () => {
 			)).toEqual(behavior("First"));
 		});
 
-		it("beats folder and frontmatter rules regardless of array order", () => {
-			const rules: HeadingRule[] = [
+		it("beats folder, heading, and frontmatter rules regardless of array order", () => {
+			const rules: HeadingRuleEntry[] = [
 				frontmatterRule("type", "meeting", "Frontmatter"),
+				headingRule("# Title", "Heading"),
 				folderRule("Projects", "Folder"),
-				pathRule("Projects/Meeting", "Path"),
+				fileRule("Projects/Meeting", "File"),
 			];
 
 			expect(resolveHeadingSettings(
 				{ path: "Projects/Meeting.md" },
-				{ frontmatter: { type: "meeting" } },
+				{
+					frontmatter: { type: "meeting" },
+					headings: [{ heading: "Title", level: 1 }],
+				},
 				rules,
 				noFallback
-			)).toEqual(behavior("Path"));
+			)).toEqual(behavior("File"));
 		});
 	});
 
@@ -416,19 +506,82 @@ describe("resolveHeadingSettings", () => {
 			)).toEqual(behavior("First"));
 		});
 
-		it("skips empty criteria and beats frontmatter rules", () => {
-			const rules: HeadingRule[] = [
+		it("skips empty criteria and beats heading and frontmatter rules", () => {
+			const rules: HeadingRuleEntry[] = [
 				frontmatterRule("type", "meeting", "Frontmatter"),
+				headingRule("# Title", "Heading"),
 				folderRule("", "Empty"),
 				folderRule("Projects", "Folder"),
 			];
 
 			expect(resolveHeadingSettings(
 				{ path: "Projects/Note.md" },
-				{ frontmatter: { type: "meeting" } },
+				{
+					frontmatter: { type: "meeting" },
+					headings: [{ heading: "Title", level: 1 }],
+				},
 				rules,
 				noFallback
 			)).toEqual(behavior("Folder"));
+		});
+	});
+
+	describe("heading rules", () => {
+		it("matches an exact case-sensitive heading level and text anywhere in the file", () => {
+			const metadata = {
+				headings: [
+					{ heading: "Overview", level: 1 },
+					{ heading: "Events by date", level: 3 },
+				],
+			};
+
+			expect(resolveHeadingSettings(
+				{ path: "Events.md" }, metadata,
+				[headingRule("### Events by date", "## 2024 Events")], noFallback
+			)).toEqual(behavior("## 2024 Events"));
+		});
+
+		it("does not match a different level, case, or malformed rule value", () => {
+			const metadata = { headings: [{ heading: "Events by date", level: 3 }] };
+			const rules = [
+				headingRule("## Events by date", "Level"),
+				headingRule("### Events By Date", "Case"),
+				headingRule("Events by date", "Malformed"),
+				headingRule("### ", "No text"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Events.md" }, metadata, rules, noFallback
+			)).toBeNull();
+		});
+
+		it("uses the first-defined matching heading rule", () => {
+			const rules = [
+				headingRule("# Title", "First"),
+				headingRule("# Title", "Second"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, { headings: [{ heading: "Title", level: 1 }] },
+				rules, noFallback
+			)).toEqual(behavior("First"));
+		});
+
+		it("beats frontmatter regardless of array order", () => {
+			const rules: HeadingRuleEntry[] = [
+				frontmatterRule("type", "meeting", "Frontmatter"),
+				headingRule("## Notes", "Heading"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" },
+				{
+					frontmatter: { type: "meeting" },
+					headings: [{ heading: "Notes", level: 2 }],
+				},
+				rules,
+				noFallback
+			)).toEqual(behavior("Heading"));
 		});
 	});
 
@@ -530,11 +683,11 @@ describe("resolveHeadingSettings", () => {
 			)).toBeNull();
 		});
 
-		it("matches path and folder rules without metadata", () => {
+		it("matches file and folder rules without metadata", () => {
 			expect(resolveHeadingSettings(
 				{ path: "Projects/Note.md" }, null,
-				[pathRule("Projects/Note", "Path")], noFallback
-			)).toEqual(behavior("Path"));
+				[fileRule("Projects/Note", "File")], noFallback
+			)).toEqual(behavior("File"));
 			expect(resolveHeadingSettings(
 				{ path: "Projects/Note.md" }, null,
 				[folderRule("Projects", "Folder")], noFallback
@@ -543,10 +696,10 @@ describe("resolveHeadingSettings", () => {
 
 		it("returns behavior fields only", () => {
 			const result = resolveHeadingSettings(
-				{ path: "Note.md" }, null, [pathRule("Note", "Path")], noFallback
+				{ path: "Note.md" }, null, [fileRule("Note", "File")], noFallback
 			);
 
-			expect(result).toEqual(behavior("Path"));
+			expect(result).toEqual(behavior("File"));
 			expect(result).not.toHaveProperty("matchType");
 			expect(result).not.toHaveProperty("path");
 		});
@@ -555,28 +708,28 @@ describe("resolveHeadingSettings", () => {
 
 describe("buildHeadingText", () => {
 	it("builds simple heading with trailing newlines", () => {
-		const result = buildHeadingText("My Heading", 3, null, 2, false, "");
+		const result = buildHeadingText("My Heading", 3, null, false, "");
 
 		expect(result.text).toBe("### My Heading\n\n");
 		expect(result.linesAdded).toBe(2);
 	});
 
 	it("adds leading newline when previous line has content", () => {
-		const result = buildHeadingText("My Heading", 2, null, 2, false, "Some content");
+		const result = buildHeadingText("My Heading", 2, null, false, "Some content");
 
 		expect(result.text).toBe("\n## My Heading\n\n");
 		expect(result.linesAdded).toBe(3);
 	});
 
 	it("does not add leading newline after frontmatter closing", () => {
-		const result = buildHeadingText("My Heading", 2, null, 2, false, "---");
+		const result = buildHeadingText("My Heading", 2, null, false, "---");
 
 		expect(result.text).toBe("## My Heading\n\n");
 		expect(result.linesAdded).toBe(2);
 	});
 
-	it("includes parent heading when needsParentCreation is true", () => {
-		const result = buildHeadingText("Child", 3, "Parent", 2, true, "");
+	it("includes the configured parent heading and level when creation is needed", () => {
+		const result = buildHeadingText("Child", 3, "## Parent", true, "");
 
 		expect(result.text).toBe("## Parent\n\n### Child\n\n");
 		expect(result.linesAdded).toBe(4);
@@ -584,7 +737,7 @@ describe("buildHeadingText", () => {
 
 	it("handles all heading levels", () => {
 		for (let level = 1; level <= 6; level++) {
-			const result = buildHeadingText("Test", level, null, 2, false, "");
+			const result = buildHeadingText("Test", level, null, false, "");
 			const expectedMarks = "#".repeat(level);
 			expect(result.text).toBe(`${expectedMarks} Test\n\n`);
 		}

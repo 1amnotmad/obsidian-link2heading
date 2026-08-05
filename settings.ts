@@ -5,8 +5,10 @@ import {
 	prepareFuzzySearch,
 	Setting,
 	setIcon,
+	TFolder,
 } from "obsidian";
 import type Link2HeadingPlugin from "./main";
+import { parseHeadingValue } from "./utils";
 
 export type HeadingLevel = "auto" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 export type MissingParentBehavior = "create" | "top" | "none";
@@ -17,14 +19,19 @@ export interface HeadingRuleBehavior {
 	missingParentBehavior: MissingParentBehavior;
 }
 
-export interface PathRule extends HeadingRuleBehavior {
-	matchType: "path";
+export interface FileRule extends HeadingRuleBehavior {
+	matchType: "file";
 	path: string;
 }
 
 export interface FolderRule extends HeadingRuleBehavior {
 	matchType: "folder";
 	folder: string;
+}
+
+export interface HeadingRule extends HeadingRuleBehavior {
+	matchType: "heading";
+	heading: string;
 }
 
 export interface FrontmatterRule extends HeadingRuleBehavior {
@@ -34,7 +41,7 @@ export interface FrontmatterRule extends HeadingRuleBehavior {
 	anyValue: boolean;
 }
 
-export type HeadingRule = PathRule | FolderRule | FrontmatterRule;
+export type HeadingRuleEntry = FileRule | FolderRule | HeadingRule | FrontmatterRule;
 
 export interface GlobalRule extends HeadingRuleBehavior {
 	matchType: "global";
@@ -45,7 +52,7 @@ export type RuleFallback =
 	| { mode: "global"; rule: GlobalRule };
 
 export interface Link2HeadingSettings {
-	rules: HeadingRule[];
+	rules: HeadingRuleEntry[];
 	fallback: RuleFallback;
 }
 
@@ -55,12 +62,16 @@ const DEFAULT_BEHAVIOR: HeadingRuleBehavior = {
 	missingParentBehavior: "top",
 };
 
-export function createPathRule(): PathRule {
-	return { ...DEFAULT_BEHAVIOR, matchType: "path", path: "" };
+export function createFileRule(): FileRule {
+	return { ...DEFAULT_BEHAVIOR, matchType: "file", path: "" };
 }
 
 export function createFolderRule(): FolderRule {
 	return { ...DEFAULT_BEHAVIOR, matchType: "folder", folder: "" };
+}
+
+export function createHeadingRule(): HeadingRule {
+	return { ...DEFAULT_BEHAVIOR, matchType: "heading", heading: "" };
 }
 
 export function createFrontmatterRule(): FrontmatterRule {
@@ -124,18 +135,23 @@ function normalizeBehavior(value: BehaviorRecord): HeadingRuleBehavior {
 	};
 }
 
-function parseRule(value: unknown): HeadingRule | null {
+function parseRule(value: unknown): HeadingRuleEntry | null {
 	if (!isRecord(value) || !isBehaviorRecord(value)) return null;
 
 	const behavior = normalizeBehavior(value);
 	switch (value.matchType) {
+		case "file":
 		case "path":
 			return typeof value.path === "string"
-				? { ...behavior, matchType: "path", path: value.path }
+				? { ...behavior, matchType: "file", path: value.path }
 				: null;
 		case "folder":
 			return typeof value.folder === "string"
 				? { ...behavior, matchType: "folder", folder: value.folder }
+				: null;
+		case "heading":
+			return typeof value.heading === "string"
+				? { ...behavior, matchType: "heading", heading: value.heading }
 				: null;
 		case "frontmatter":
 			return typeof value.property === "string" &&
@@ -174,7 +190,7 @@ function parseFallback(value: unknown): RuleFallback {
 export function parseSettingsData(data: unknown): Link2HeadingSettings {
 	if (!isRecord(data)) return createDefaultSettings();
 
-	const rules: HeadingRule[] = [];
+	const rules: HeadingRuleEntry[] = [];
 	if (Array.isArray(data.rules)) {
 		data.rules.forEach((value, index) => {
 			const rule = parseRule(value);
@@ -192,7 +208,7 @@ export function parseSettingsData(data: unknown): Link2HeadingSettings {
 	};
 }
 
-class PathInputSuggest extends AbstractInputSuggest<string> {
+class FileInputSuggest extends AbstractInputSuggest<string> {
 	constructor(app: App, inputEl: HTMLInputElement) {
 		super(app, inputEl);
 		this.limit = 50;
@@ -218,9 +234,36 @@ class PathInputSuggest extends AbstractInputSuggest<string> {
 	}
 }
 
+class FolderInputSuggest extends AbstractInputSuggest<string> {
+	constructor(app: App, inputEl: HTMLInputElement) {
+		super(app, inputEl);
+		this.limit = 50;
+	}
+
+	protected getSuggestions(query: string): string[] {
+		const folders = this.app.vault.getAllLoadedFiles()
+			.filter((file): file is TFolder => file instanceof TFolder)
+			.map((folder) => `${folder.path.replace(/\/+$/, "")}/`)
+			.filter((folder) => folder !== "/");
+		if (!query.trim()) return folders.slice(0, this.limit);
+
+		const search = prepareFuzzySearch(query);
+		return folders
+			.map((folder) => ({ folder, match: search(folder) }))
+			.filter((result) => result.match !== null)
+			.sort((a, b) => (b.match?.score ?? 0) - (a.match?.score ?? 0))
+			.slice(0, this.limit)
+			.map((result) => result.folder);
+	}
+
+	renderSuggestion(folder: string, el: HTMLElement): void {
+		el.setText(folder);
+	}
+}
+
 export class Link2HeadingSettingTab extends PluginSettingTab {
 	plugin: Link2HeadingPlugin;
-	private pathSuggests: PathInputSuggest[] = [];
+	private inputSuggests: AbstractInputSuggest<string>[] = [];
 
 	constructor(app: App, plugin: Link2HeadingPlugin) {
 		super(app, plugin);
@@ -229,17 +272,17 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
-		this.closePathSuggests();
+		this.closeInputSuggests();
 		containerEl.empty();
 		containerEl.addClass("link2heading-settings");
 
 		containerEl.createEl("h2", { text: "Heading Rules" });
 		containerEl.createEl("p", {
-			text: "Rules are checked in priority order (highest to lowest): Path & Filename, Folder (recursive), Frontmatter Property, then Global.",
+			text: "Rules are checked in priority order (highest to lowest):\n1. File    2. Folder    3. Heading    4. Frontmatter Property    5. Global",
 			cls: "link2heading-rules-intro",
 		});
 		containerEl.createEl("p", {
-			text: "The first matching rule determines where the new heading is inserted, at what level, and what happens if the parent heading is missing.",
+			text: "The first matching rule determines where the new heading\nis inserted, at what level, and what happens if the\nparent heading is missing.",
 			cls: "link2heading-rules-intro",
 		});
 
@@ -257,13 +300,13 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 	}
 
 	hide(): void {
-		this.closePathSuggests();
+		this.closeInputSuggests();
 		super.hide();
 	}
 
-	private closePathSuggests(): void {
-		this.pathSuggests.forEach((suggest) => suggest.close());
-		this.pathSuggests = [];
+	private closeInputSuggests(): void {
+		this.inputSuggests.forEach((suggest) => suggest.close());
+		this.inputSuggests = [];
 	}
 
 	private renderFallback(containerEl: HTMLElement): void {
@@ -285,17 +328,19 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 	}
 
 	private renderAddRuleControls(containerEl: HTMLElement): void {
-		let matchType: HeadingRule["matchType"] = "path";
+		let matchType: HeadingRuleEntry["matchType"] = "file";
 		const controls = containerEl.createDiv("link2heading-add-rule");
 
 		new Setting(controls)
-			.setName("Add rule")
+			.setName("New rule")
 			.addDropdown((dropdown) => dropdown
-				.addOption("path", "Path & Filename")
-				.addOption("folder", "Folder (recursive)")
+				.addOption("file", "File")
+				.addOption("folder", "Folder")
+				.addOption("heading", "Heading")
 				.addOption("frontmatter", "Frontmatter Property")
 				.onChange((value) => {
-					if (value === "path" || value === "folder" || value === "frontmatter") {
+					if (value === "file" || value === "folder" ||
+						value === "heading" || value === "frontmatter") {
 						matchType = value;
 					}
 				})
@@ -311,18 +356,20 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 			);
 	}
 
-	private createRule(matchType: HeadingRule["matchType"]): HeadingRule {
+	private createRule(matchType: HeadingRuleEntry["matchType"]): HeadingRuleEntry {
 		switch (matchType) {
-			case "path":
-				return createPathRule();
+			case "file":
+				return createFileRule();
 			case "folder":
 				return createFolderRule();
+			case "heading":
+				return createHeadingRule();
 			case "frontmatter":
 				return createFrontmatterRule();
 		}
 	}
 
-	private renderRuleCard(containerEl: HTMLElement, rule: HeadingRule, index: number): void {
+	private renderRuleCard(containerEl: HTMLElement, rule: HeadingRuleEntry, index: number): void {
 		const card = containerEl.createDiv("link2heading-rule-card");
 		const header = card.createDiv("link2heading-rule-header");
 		header.createEl("strong", { text: `Rule ${index + 1}` });
@@ -341,12 +388,14 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 		new Setting(card)
 			.setName("Match type")
 			.addDropdown((dropdown) => dropdown
-				.addOption("path", "Path & Filename")
-				.addOption("folder", "Folder (recursive)")
+				.addOption("file", "File")
+				.addOption("folder", "Folder")
+				.addOption("heading", "Heading")
 				.addOption("frontmatter", "Frontmatter Property")
 				.setValue(rule.matchType)
 				.onChange(async (value) => {
-					if (value !== "path" && value !== "folder" && value !== "frontmatter") return;
+					if (value !== "file" && value !== "folder" &&
+						value !== "heading" && value !== "frontmatter") return;
 					const replacement = this.createRule(value);
 					replacement.parentHeading = rule.parentHeading;
 					replacement.headingLevel = rule.headingLevel;
@@ -362,11 +411,11 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 		this.renderBehaviorControls(card, rule);
 	}
 
-	private renderMatchCriteria(card: HTMLElement, rule: HeadingRule): void {
+	private renderMatchCriteria(card: HTMLElement, rule: HeadingRuleEntry): void {
 		switch (rule.matchType) {
-			case "path":
+			case "file":
 				new Setting(card)
-					.setName("Path & Filename")
+					.setName("File")
 					.addText((text) => {
 						text.setPlaceholder("Projects/Active/Meeting")
 							.setValue(rule.path)
@@ -375,27 +424,49 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 								await this.plugin.saveSettings();
 							});
 
-						const suggest = new PathInputSuggest(this.app, text.inputEl);
+						const suggest = new FileInputSuggest(this.app, text.inputEl);
 						suggest.onSelect(async (value) => {
 							text.setValue(value);
 							rule.path = value;
 							await this.plugin.saveSettings();
 						});
-						this.pathSuggests.push(suggest);
+						this.inputSuggests.push(suggest);
 					});
 				break;
 			case "folder":
 				new Setting(card)
 					.setName("Folder")
-					.addText((text) => text
-						.setPlaceholder("Projects/Active")
-						.setValue(rule.folder)
-						.onChange(async (value) => {
+					.addText((text) => {
+						text.setPlaceholder("Projects/Active/")
+							.setValue(rule.folder)
+							.onChange(async (value) => {
+								rule.folder = value;
+								await this.plugin.saveSettings();
+							});
+
+						const suggest = new FolderInputSuggest(this.app, text.inputEl);
+						suggest.onSelect(async (value) => {
+							text.setValue(value);
 							rule.folder = value;
 							await this.plugin.saveSettings();
-						})
-					);
+						});
+						this.inputSuggests.push(suggest);
+					});
 				break;
+			case "heading": {
+				const setting = new Setting(card).setName("Heading");
+				setting.addText((text) => {
+					text.setPlaceholder("### Events by date")
+						.setValue(rule.heading);
+					const validate = this.addHeadingValidation(setting, text.inputEl, rule.heading);
+					text.onChange(async (value) => {
+						rule.heading = value;
+						validate(value);
+						await this.plugin.saveSettings();
+					});
+				});
+				break;
+			}
 			case "frontmatter": {
 				new Setting(card)
 					.setName("Property")
@@ -449,21 +520,26 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 	}
 
 	private renderBehaviorControls(card: HTMLElement, behavior: HeadingRuleBehavior): void {
-		new Setting(card)
-			.setName("Parent heading")
-			.addText((text) => text
-				.setPlaceholder("None - Insert at top")
-				.setValue(behavior.parentHeading)
-				.onChange(async (value) => {
-					behavior.parentHeading = value;
-					await this.plugin.saveSettings();
-				})
+		const parentHeadingSetting = new Setting(card).setName("Parent heading");
+		parentHeadingSetting.addText((text) => {
+			text.setPlaceholder("## Notes (empty inserts at top)")
+				.setValue(behavior.parentHeading);
+			const validate = this.addHeadingValidation(
+				parentHeadingSetting,
+				text.inputEl,
+				behavior.parentHeading
 			);
+			text.onChange(async (value) => {
+				behavior.parentHeading = value;
+				validate(value);
+				await this.plugin.saveSettings();
+			});
+		});
 
 		new Setting(card)
 			.setName("Heading level")
 			.addDropdown((dropdown) => dropdown
-				.addOption("auto", "1 level below parent")
+				.addOption("auto", "One level below parent")
 				.addOption("h1", "H1")
 				.addOption("h2", "H2")
 				.addOption("h3", "H3")
@@ -491,5 +567,22 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})
 			);
+	}
+
+	private addHeadingValidation(
+		setting: Setting,
+		inputEl: HTMLInputElement,
+		initialValue: string
+	): (value: string) => void {
+		setting.controlEl.addClass("link2heading-heading-control");
+		const errorEl = setting.controlEl.createDiv("link2heading-heading-error");
+		const validate = (value: string) => {
+			const invalid = value !== "" && parseHeadingValue(value) === null;
+			inputEl.classList.toggle("link2heading-input-invalid", invalid);
+			errorEl.classList.toggle("is-visible", invalid);
+			errorEl.setText(invalid ? "Use a heading like ## Notes." : "");
+		};
+		validate(initialValue);
+		return validate;
 	}
 }

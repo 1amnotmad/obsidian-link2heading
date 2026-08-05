@@ -75,7 +75,7 @@ export default class Link2HeadingPlugin extends Plugin {
 
 		const behavior = resolveHeadingSettings(
 			file,
-			cache,
+			{ frontmatter: cache.frontmatter, headings: cache.headings },
 			this.settings.rules,
 			this.settings.fallback
 		);
@@ -96,12 +96,11 @@ export default class Link2HeadingPlugin extends Plugin {
 
 		const { insertionPoint, parentLevel, needsParentCreation } = insertionResult;
 		const level = calculateHeadingLevel(behavior.headingLevel, parentLevel);
-		const parentLevelNum = behavior.headingLevel === "auto" ? 2 : Math.max(1, level - 1);
 		const prevLineContent = insertionPoint.line > 0 ? editor.getLine(insertionPoint.line - 1) : "";
 
 		const { text, linesAdded } = buildHeadingText(
 			headingText, level, behavior.parentHeading || null,
-			parentLevelNum, needsParentCreation, prevLineContent
+			needsParentCreation, prevLineContent
 		);
 
 		editor.replaceRange(text, insertionPoint);

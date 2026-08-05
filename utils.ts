@@ -1,6 +1,6 @@
 import type { HeadingCache, EditorPosition } from "obsidian";
 import type {
-	HeadingRule,
+	HeadingRuleEntry,
 	HeadingRuleBehavior,
 	RuleFallback,
 } from "./settings";
@@ -11,6 +11,12 @@ export interface RuleMatchFile {
 
 export interface RuleMatchMetadata {
 	frontmatter?: Record<string, unknown>;
+	headings?: RuleMatchHeading[];
+}
+
+export interface RuleMatchHeading {
+	heading: string;
+	level: number;
 }
 
 export interface InsertionResult {
@@ -23,6 +29,17 @@ export interface InsertionResult {
 export interface EditorLike {
 	getLine(line: number): string;
 	lineCount(): number;
+}
+
+/** Parses a Markdown heading value that includes its level prefix. */
+export function parseHeadingValue(value: string): { level: number; text: string } | null {
+	const match = /^(#+) (.*\S.*)$/.exec(value);
+	if (!match) return null;
+
+	return {
+		level: match[1].length,
+		text: match[2],
+	};
 }
 
 function normalizeSlashes(path: string): string {
@@ -52,18 +69,18 @@ function getBehavior(rule: HeadingRuleBehavior): HeadingRuleBehavior {
 export function resolveHeadingSettings(
 	file: RuleMatchFile,
 	metadata: RuleMatchMetadata | null,
-	rules: HeadingRule[],
+	rules: HeadingRuleEntry[],
 	fallback: RuleFallback
 ): HeadingRuleBehavior | null {
 	const filePath = normalizePath(file.path);
 
 	for (const rule of rules) {
-		if (rule.matchType !== "path") continue;
+		if (rule.matchType !== "file") continue;
 		const rulePath = normalizePath(rule.path);
 		if (rulePath && rulePath === filePath) return getBehavior(rule);
 	}
 
-	let folderMatch: HeadingRule | null = null;
+	let folderMatch: HeadingRuleEntry | null = null;
 	let folderMatchDepth = -1;
 	for (const rule of rules) {
 		if (rule.matchType !== "folder") continue;
@@ -77,6 +94,21 @@ export function resolveHeadingSettings(
 		}
 	}
 	if (folderMatch) return getBehavior(folderMatch);
+
+	const headings = metadata?.headings;
+	if (headings) {
+		for (const rule of rules) {
+			if (rule.matchType !== "heading") continue;
+			const heading = parseHeadingValue(rule.heading);
+			if (!heading) continue;
+
+			if (headings.some(
+				(candidate) => candidate.level === heading.level && candidate.heading === heading.text
+			)) {
+				return getBehavior(rule);
+			}
+		}
+	}
 
 	const frontmatter = metadata?.frontmatter;
 	if (frontmatter) {
@@ -136,9 +168,12 @@ export function findInsertionPoint(
 		return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: false };
 	}
 
-	const parentHeading = existingHeadings?.find(
-		(h) => h.heading.toLowerCase() === settings.parentHeading.toLowerCase()
-	);
+	const parsedParentHeading = parseHeadingValue(settings.parentHeading);
+	const parentHeading = parsedParentHeading
+		? existingHeadings?.find(
+			(h) => h.level === parsedParentHeading.level && h.heading === parsedParentHeading.text
+		)
+		: undefined;
 
 	if (parentHeading) {
 		return {
@@ -152,7 +187,11 @@ export function findInsertionPoint(
 		case "top":
 			return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: false };
 		case "create":
-			return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: true };
+			return {
+				insertionPoint: { line: topLine, ch: 0 },
+				parentLevel: parsedParentHeading?.level ?? null,
+				needsParentCreation: parsedParentHeading !== null,
+			};
 		case "none":
 			return null;
 	}
@@ -163,7 +202,6 @@ export function buildHeadingText(
 	headingText: string,
 	level: number,
 	parentHeading: string | null,
-	parentLevel: number,
 	needsParentCreation: boolean,
 	prevLineContent: string
 ): { text: string; linesAdded: number } {
@@ -176,7 +214,7 @@ export function buildHeadingText(
 	}
 
 	if (needsParentCreation && parentHeading) {
-		text += `${"#".repeat(parentLevel)} ${parentHeading}\n\n`;
+		text += `${parentHeading}\n\n`;
 		linesAdded += 2;
 	}
 

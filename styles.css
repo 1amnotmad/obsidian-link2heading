@@ -1,6 +1,7 @@
 .link2heading-settings .link2heading-rules-intro {
 	color: var(--text-muted);
 	margin: 0 0 var(--size-4-2);
+	white-space: pre-wrap;
 }
 
 .link2heading-fallback-card,
@@ -53,11 +54,32 @@
 
 .link2heading-rule-separator {
 	border-top: 1px solid var(--background-modifier-border);
-	margin: var(--size-4-2) 0;
+	margin: var(--size-4-3) 0 var(--size-4-2);
 }
 
 .link2heading-rule-card input[type="text"] {
 	width: min(100%, 24rem);
+}
+
+.link2heading-heading-control {
+	align-items: flex-end;
+	flex-direction: column;
+}
+
+.link2heading-heading-error {
+	color: var(--text-error);
+	display: none;
+	font-size: var(--font-ui-smaller);
+	margin-top: var(--size-4-1);
+}
+
+.link2heading-heading-error.is-visible {
+	display: block;
+}
+
+.link2heading-rule-card input.link2heading-input-invalid {
+	border-color: var(--text-error);
+	box-shadow: 0 0 0 1px var(--text-error);
 }
 
 .link2heading-any-value-checkbox {

@@ -31,16 +31,173 @@ var import_obsidian2 = require("obsidian");
 
 // settings.ts
 var import_obsidian = require("obsidian");
+
+// utils.ts
+function parseHeadingValue(value) {
+  const match = /^(#+) (.*\S.*)$/.exec(value);
+  if (!match) return null;
+  return {
+    level: match[1].length,
+    text: match[2]
+  };
+}
+function normalizeSlashes(path) {
+  return path.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+}
+function normalizePath(path) {
+  return normalizeSlashes(path).replace(/\.md$/, "");
+}
+function normalizeFolder(folder) {
+  return normalizeSlashes(folder).replace(/\/+$/, "");
+}
+function getBehavior(rule) {
+  return {
+    parentHeading: rule.parentHeading,
+    headingLevel: rule.headingLevel,
+    missingParentBehavior: rule.missingParentBehavior
+  };
+}
+function resolveHeadingSettings(file, metadata, rules, fallback) {
+  const filePath = normalizePath(file.path);
+  for (const rule of rules) {
+    if (rule.matchType !== "file") continue;
+    const rulePath = normalizePath(rule.path);
+    if (rulePath && rulePath === filePath) return getBehavior(rule);
+  }
+  let folderMatch = null;
+  let folderMatchDepth = -1;
+  for (const rule of rules) {
+    if (rule.matchType !== "folder") continue;
+    const folder = normalizeFolder(rule.folder);
+    if (!folder || !filePath.startsWith(folder + "/")) continue;
+    const depth = folder.split("/").length;
+    if (depth > folderMatchDepth) {
+      folderMatch = rule;
+      folderMatchDepth = depth;
+    }
+  }
+  if (folderMatch) return getBehavior(folderMatch);
+  const headings = metadata == null ? void 0 : metadata.headings;
+  if (headings) {
+    for (const rule of rules) {
+      if (rule.matchType !== "heading") continue;
+      const heading = parseHeadingValue(rule.heading);
+      if (!heading) continue;
+      if (headings.some(
+        (candidate) => candidate.level === heading.level && candidate.heading === heading.text
+      )) {
+        return getBehavior(rule);
+      }
+    }
+  }
+  const frontmatter = metadata == null ? void 0 : metadata.frontmatter;
+  if (frontmatter) {
+    for (const rule of rules) {
+      if (rule.matchType !== "frontmatter") continue;
+      const property = rule.property.trim();
+      if (!property || !rule.anyValue && !rule.value) continue;
+      const key = Object.keys(frontmatter).find(
+        (candidate) => candidate.toLowerCase() === property.toLowerCase()
+      );
+      if (key === void 0) continue;
+      if (rule.anyValue) return getBehavior(rule);
+      const value = frontmatter[key];
+      if (Array.isArray(value) ? value.includes(rule.value) : value === rule.value) {
+        return getBehavior(rule);
+      }
+    }
+  }
+  return fallback.mode === "global" ? getBehavior(fallback.rule) : null;
+}
+function getLineAfterFrontmatter(editor) {
+  if (editor.getLine(0) !== "---") return 0;
+  for (let i = 1; i < editor.lineCount(); i++) {
+    if (editor.getLine(i) === "---") return i + 1;
+  }
+  return 0;
+}
+function calculateHeadingLevel(headingLevelSetting, parentLevel) {
+  if (headingLevelSetting !== "auto") {
+    const level = parseInt(headingLevelSetting.replace("h", ""));
+    return Math.min(Math.max(level, 1), 6);
+  }
+  if (parentLevel !== null) return Math.min(parentLevel + 1, 6);
+  return 3;
+}
+function findInsertionPoint(editor, existingHeadings, settings) {
+  var _a;
+  const topLine = getLineAfterFrontmatter(editor);
+  if (!settings.parentHeading) {
+    return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: false };
+  }
+  const parsedParentHeading = parseHeadingValue(settings.parentHeading);
+  const parentHeading = parsedParentHeading ? existingHeadings == null ? void 0 : existingHeadings.find(
+    (h) => h.level === parsedParentHeading.level && h.heading === parsedParentHeading.text
+  ) : void 0;
+  if (parentHeading) {
+    return {
+      insertionPoint: { line: parentHeading.position.end.line + 1, ch: 0 },
+      parentLevel: parentHeading.level,
+      needsParentCreation: false
+    };
+  }
+  switch (settings.missingParentBehavior) {
+    case "top":
+      return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: false };
+    case "create":
+      return {
+        insertionPoint: { line: topLine, ch: 0 },
+        parentLevel: (_a = parsedParentHeading == null ? void 0 : parsedParentHeading.level) != null ? _a : null,
+        needsParentCreation: parsedParentHeading !== null
+      };
+    case "none":
+      return null;
+  }
+}
+function buildHeadingText(headingText, level, parentHeading, needsParentCreation, prevLineContent) {
+  let text = "";
+  let linesAdded = 0;
+  if (prevLineContent && prevLineContent !== "---") {
+    text += "\n";
+    linesAdded++;
+  }
+  if (needsParentCreation && parentHeading) {
+    text += `${parentHeading}
+
+`;
+    linesAdded += 2;
+  }
+  text += `${"#".repeat(level)} ${headingText}
+
+`;
+  linesAdded += 2;
+  return { text, linesAdded };
+}
+function parseLinkWithHeading(linktext, sourcePath, resolveFile) {
+  if (!linktext.includes("#")) return null;
+  const [filePart, headingPart] = linktext.split("#");
+  if (!headingPart) return null;
+  const resolvedPath = resolveFile(filePart || "", sourcePath);
+  return {
+    file: resolvedPath || filePart || "",
+    heading: decodeURIComponent(headingPart)
+  };
+}
+
+// settings.ts
 var DEFAULT_BEHAVIOR = {
   parentHeading: "",
   headingLevel: "auto",
   missingParentBehavior: "top"
 };
-function createPathRule() {
-  return { ...DEFAULT_BEHAVIOR, matchType: "path", path: "" };
+function createFileRule() {
+  return { ...DEFAULT_BEHAVIOR, matchType: "file", path: "" };
 }
 function createFolderRule() {
   return { ...DEFAULT_BEHAVIOR, matchType: "folder", folder: "" };
+}
+function createHeadingRule() {
+  return { ...DEFAULT_BEHAVIOR, matchType: "heading", heading: "" };
 }
 function createFrontmatterRule() {
   return {
@@ -87,10 +244,13 @@ function parseRule(value) {
   if (!isRecord(value) || !isBehaviorRecord(value)) return null;
   const behavior = normalizeBehavior(value);
   switch (value.matchType) {
+    case "file":
     case "path":
-      return typeof value.path === "string" ? { ...behavior, matchType: "path", path: value.path } : null;
+      return typeof value.path === "string" ? { ...behavior, matchType: "file", path: value.path } : null;
     case "folder":
       return typeof value.folder === "string" ? { ...behavior, matchType: "folder", folder: value.folder } : null;
+    case "heading":
+      return typeof value.heading === "string" ? { ...behavior, matchType: "heading", heading: value.heading } : null;
     case "frontmatter":
       return typeof value.property === "string" && typeof value.value === "string" && typeof value.anyValue === "boolean" ? {
         ...behavior,
@@ -133,7 +293,7 @@ function parseSettingsData(data) {
     fallback: parseFallback(data.fallback)
   };
 }
-var PathInputSuggest = class extends import_obsidian.AbstractInputSuggest {
+var FileInputSuggest = class extends import_obsidian.AbstractInputSuggest {
   constructor(app, inputEl) {
     super(app, inputEl);
     this.limit = 50;
@@ -153,24 +313,42 @@ var PathInputSuggest = class extends import_obsidian.AbstractInputSuggest {
     el.setText(path);
   }
 };
+var FolderInputSuggest = class extends import_obsidian.AbstractInputSuggest {
+  constructor(app, inputEl) {
+    super(app, inputEl);
+    this.limit = 50;
+  }
+  getSuggestions(query) {
+    const folders = this.app.vault.getAllLoadedFiles().filter((file) => file instanceof import_obsidian.TFolder).map((folder) => `${folder.path.replace(/\/+$/, "")}/`).filter((folder) => folder !== "/");
+    if (!query.trim()) return folders.slice(0, this.limit);
+    const search = (0, import_obsidian.prepareFuzzySearch)(query);
+    return folders.map((folder) => ({ folder, match: search(folder) })).filter((result) => result.match !== null).sort((a, b) => {
+      var _a, _b, _c, _d;
+      return ((_b = (_a = b.match) == null ? void 0 : _a.score) != null ? _b : 0) - ((_d = (_c = a.match) == null ? void 0 : _c.score) != null ? _d : 0);
+    }).slice(0, this.limit).map((result) => result.folder);
+  }
+  renderSuggestion(folder, el) {
+    el.setText(folder);
+  }
+};
 var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
-    this.pathSuggests = [];
+    this.inputSuggests = [];
     this.plugin = plugin;
   }
   display() {
     const { containerEl } = this;
-    this.closePathSuggests();
+    this.closeInputSuggests();
     containerEl.empty();
     containerEl.addClass("link2heading-settings");
     containerEl.createEl("h2", { text: "Heading Rules" });
     containerEl.createEl("p", {
-      text: "Rules are checked in priority order (highest to lowest): Path & Filename, Folder (recursive), Frontmatter Property, then Global.",
+      text: "Rules are checked in priority order (highest to lowest):\n1. File    2. Folder    3. Heading    4. Frontmatter Property    5. Global",
       cls: "link2heading-rules-intro"
     });
     containerEl.createEl("p", {
-      text: "The first matching rule determines where the new heading is inserted, at what level, and what happens if the parent heading is missing.",
+      text: "The first matching rule determines where the new heading\nis inserted, at what level, and what happens if the\nparent heading is missing.",
       cls: "link2heading-rules-intro"
     });
     this.renderFallback(containerEl);
@@ -184,12 +362,12 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
     }
   }
   hide() {
-    this.closePathSuggests();
+    this.closeInputSuggests();
     super.hide();
   }
-  closePathSuggests() {
-    this.pathSuggests.forEach((suggest) => suggest.close());
-    this.pathSuggests = [];
+  closeInputSuggests() {
+    this.inputSuggests.forEach((suggest) => suggest.close());
+    this.inputSuggests = [];
   }
   renderFallback(containerEl) {
     const card = containerEl.createDiv("link2heading-fallback-card");
@@ -202,11 +380,11 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
     );
   }
   renderAddRuleControls(containerEl) {
-    let matchType = "path";
+    let matchType = "file";
     const controls = containerEl.createDiv("link2heading-add-rule");
-    new import_obsidian.Setting(controls).setName("Add rule").addDropdown(
-      (dropdown) => dropdown.addOption("path", "Path & Filename").addOption("folder", "Folder (recursive)").addOption("frontmatter", "Frontmatter Property").onChange((value) => {
-        if (value === "path" || value === "folder" || value === "frontmatter") {
+    new import_obsidian.Setting(controls).setName("New rule").addDropdown(
+      (dropdown) => dropdown.addOption("file", "File").addOption("folder", "Folder").addOption("heading", "Heading").addOption("frontmatter", "Frontmatter Property").onChange((value) => {
+        if (value === "file" || value === "folder" || value === "heading" || value === "frontmatter") {
           matchType = value;
         }
       })
@@ -220,10 +398,12 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
   }
   createRule(matchType) {
     switch (matchType) {
-      case "path":
-        return createPathRule();
+      case "file":
+        return createFileRule();
       case "folder":
         return createFolderRule();
+      case "heading":
+        return createHeadingRule();
       case "frontmatter":
         return createFrontmatterRule();
     }
@@ -243,8 +423,8 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
       this.display();
     });
     new import_obsidian.Setting(card).setName("Match type").addDropdown(
-      (dropdown) => dropdown.addOption("path", "Path & Filename").addOption("folder", "Folder (recursive)").addOption("frontmatter", "Frontmatter Property").setValue(rule.matchType).onChange(async (value) => {
-        if (value !== "path" && value !== "folder" && value !== "frontmatter") return;
+      (dropdown) => dropdown.addOption("file", "File").addOption("folder", "Folder").addOption("heading", "Heading").addOption("frontmatter", "Frontmatter Property").setValue(rule.matchType).onChange(async (value) => {
+        if (value !== "file" && value !== "folder" && value !== "heading" && value !== "frontmatter") return;
         const replacement = this.createRule(value);
         replacement.parentHeading = rule.parentHeading;
         replacement.headingLevel = rule.headingLevel;
@@ -260,29 +440,49 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
   }
   renderMatchCriteria(card, rule) {
     switch (rule.matchType) {
-      case "path":
-        new import_obsidian.Setting(card).setName("Path & Filename").addText((text) => {
+      case "file":
+        new import_obsidian.Setting(card).setName("File").addText((text) => {
           text.setPlaceholder("Projects/Active/Meeting").setValue(rule.path).onChange(async (value) => {
             rule.path = value;
             await this.plugin.saveSettings();
           });
-          const suggest = new PathInputSuggest(this.app, text.inputEl);
+          const suggest = new FileInputSuggest(this.app, text.inputEl);
           suggest.onSelect(async (value) => {
             text.setValue(value);
             rule.path = value;
             await this.plugin.saveSettings();
           });
-          this.pathSuggests.push(suggest);
+          this.inputSuggests.push(suggest);
         });
         break;
       case "folder":
-        new import_obsidian.Setting(card).setName("Folder").addText(
-          (text) => text.setPlaceholder("Projects/Active").setValue(rule.folder).onChange(async (value) => {
+        new import_obsidian.Setting(card).setName("Folder").addText((text) => {
+          text.setPlaceholder("Projects/Active/").setValue(rule.folder).onChange(async (value) => {
             rule.folder = value;
             await this.plugin.saveSettings();
-          })
-        );
+          });
+          const suggest = new FolderInputSuggest(this.app, text.inputEl);
+          suggest.onSelect(async (value) => {
+            text.setValue(value);
+            rule.folder = value;
+            await this.plugin.saveSettings();
+          });
+          this.inputSuggests.push(suggest);
+        });
         break;
+      case "heading": {
+        const setting = new import_obsidian.Setting(card).setName("Heading");
+        setting.addText((text) => {
+          text.setPlaceholder("### Events by date").setValue(rule.heading);
+          const validate = this.addHeadingValidation(setting, text.inputEl, rule.heading);
+          text.onChange(async (value) => {
+            rule.heading = value;
+            validate(value);
+            await this.plugin.saveSettings();
+          });
+        });
+        break;
+      }
       case "frontmatter": {
         new import_obsidian.Setting(card).setName("Property").addText(
           (text) => text.setPlaceholder("type").setValue(rule.property).onChange(async (value) => {
@@ -320,14 +520,22 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
     this.renderBehaviorControls(card, rule);
   }
   renderBehaviorControls(card, behavior) {
-    new import_obsidian.Setting(card).setName("Parent heading").addText(
-      (text) => text.setPlaceholder("None - Insert at top").setValue(behavior.parentHeading).onChange(async (value) => {
+    const parentHeadingSetting = new import_obsidian.Setting(card).setName("Parent heading");
+    parentHeadingSetting.addText((text) => {
+      text.setPlaceholder("## Notes (empty inserts at top)").setValue(behavior.parentHeading);
+      const validate = this.addHeadingValidation(
+        parentHeadingSetting,
+        text.inputEl,
+        behavior.parentHeading
+      );
+      text.onChange(async (value) => {
         behavior.parentHeading = value;
+        validate(value);
         await this.plugin.saveSettings();
-      })
-    );
+      });
+    });
     new import_obsidian.Setting(card).setName("Heading level").addDropdown(
-      (dropdown) => dropdown.addOption("auto", "1 level below parent").addOption("h1", "H1").addOption("h2", "H2").addOption("h3", "H3").addOption("h4", "H4").addOption("h5", "H5").addOption("h6", "H6").setValue(behavior.headingLevel).onChange(async (value) => {
+      (dropdown) => dropdown.addOption("auto", "One level below parent").addOption("h1", "H1").addOption("h2", "H2").addOption("h3", "H3").addOption("h4", "H4").addOption("h5", "H5").addOption("h6", "H6").setValue(behavior.headingLevel).onChange(async (value) => {
         if (!isHeadingLevel(value)) return;
         behavior.headingLevel = value;
         await this.plugin.saveSettings();
@@ -341,132 +549,19 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
   }
-};
-
-// utils.ts
-function normalizeSlashes(path) {
-  return path.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/{2,}/g, "/");
-}
-function normalizePath(path) {
-  return normalizeSlashes(path).replace(/\.md$/, "");
-}
-function normalizeFolder(folder) {
-  return normalizeSlashes(folder).replace(/\/+$/, "");
-}
-function getBehavior(rule) {
-  return {
-    parentHeading: rule.parentHeading,
-    headingLevel: rule.headingLevel,
-    missingParentBehavior: rule.missingParentBehavior
-  };
-}
-function resolveHeadingSettings(file, metadata, rules, fallback) {
-  const filePath = normalizePath(file.path);
-  for (const rule of rules) {
-    if (rule.matchType !== "path") continue;
-    const rulePath = normalizePath(rule.path);
-    if (rulePath && rulePath === filePath) return getBehavior(rule);
-  }
-  let folderMatch = null;
-  let folderMatchDepth = -1;
-  for (const rule of rules) {
-    if (rule.matchType !== "folder") continue;
-    const folder = normalizeFolder(rule.folder);
-    if (!folder || !filePath.startsWith(folder + "/")) continue;
-    const depth = folder.split("/").length;
-    if (depth > folderMatchDepth) {
-      folderMatch = rule;
-      folderMatchDepth = depth;
-    }
-  }
-  if (folderMatch) return getBehavior(folderMatch);
-  const frontmatter = metadata == null ? void 0 : metadata.frontmatter;
-  if (frontmatter) {
-    for (const rule of rules) {
-      if (rule.matchType !== "frontmatter") continue;
-      const property = rule.property.trim();
-      if (!property || !rule.anyValue && !rule.value) continue;
-      const key = Object.keys(frontmatter).find(
-        (candidate) => candidate.toLowerCase() === property.toLowerCase()
-      );
-      if (key === void 0) continue;
-      if (rule.anyValue) return getBehavior(rule);
-      const value = frontmatter[key];
-      if (Array.isArray(value) ? value.includes(rule.value) : value === rule.value) {
-        return getBehavior(rule);
-      }
-    }
-  }
-  return fallback.mode === "global" ? getBehavior(fallback.rule) : null;
-}
-function getLineAfterFrontmatter(editor) {
-  if (editor.getLine(0) !== "---") return 0;
-  for (let i = 1; i < editor.lineCount(); i++) {
-    if (editor.getLine(i) === "---") return i + 1;
-  }
-  return 0;
-}
-function calculateHeadingLevel(headingLevelSetting, parentLevel) {
-  if (headingLevelSetting !== "auto") {
-    const level = parseInt(headingLevelSetting.replace("h", ""));
-    return Math.min(Math.max(level, 1), 6);
-  }
-  if (parentLevel !== null) return Math.min(parentLevel + 1, 6);
-  return 3;
-}
-function findInsertionPoint(editor, existingHeadings, settings) {
-  const topLine = getLineAfterFrontmatter(editor);
-  if (!settings.parentHeading) {
-    return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: false };
-  }
-  const parentHeading = existingHeadings == null ? void 0 : existingHeadings.find(
-    (h) => h.heading.toLowerCase() === settings.parentHeading.toLowerCase()
-  );
-  if (parentHeading) {
-    return {
-      insertionPoint: { line: parentHeading.position.end.line + 1, ch: 0 },
-      parentLevel: parentHeading.level,
-      needsParentCreation: false
+  addHeadingValidation(setting, inputEl, initialValue) {
+    setting.controlEl.addClass("link2heading-heading-control");
+    const errorEl = setting.controlEl.createDiv("link2heading-heading-error");
+    const validate = (value) => {
+      const invalid = value !== "" && parseHeadingValue(value) === null;
+      inputEl.classList.toggle("link2heading-input-invalid", invalid);
+      errorEl.classList.toggle("is-visible", invalid);
+      errorEl.setText(invalid ? "Use a heading like ## Notes." : "");
     };
+    validate(initialValue);
+    return validate;
   }
-  switch (settings.missingParentBehavior) {
-    case "top":
-      return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: false };
-    case "create":
-      return { insertionPoint: { line: topLine, ch: 0 }, parentLevel: null, needsParentCreation: true };
-    case "none":
-      return null;
-  }
-}
-function buildHeadingText(headingText, level, parentHeading, parentLevel, needsParentCreation, prevLineContent) {
-  let text = "";
-  let linesAdded = 0;
-  if (prevLineContent && prevLineContent !== "---") {
-    text += "\n";
-    linesAdded++;
-  }
-  if (needsParentCreation && parentHeading) {
-    text += `${"#".repeat(parentLevel)} ${parentHeading}
-
-`;
-    linesAdded += 2;
-  }
-  text += `${"#".repeat(level)} ${headingText}
-
-`;
-  linesAdded += 2;
-  return { text, linesAdded };
-}
-function parseLinkWithHeading(linktext, sourcePath, resolveFile) {
-  if (!linktext.includes("#")) return null;
-  const [filePart, headingPart] = linktext.split("#");
-  if (!headingPart) return null;
-  const resolvedPath = resolveFile(filePart || "", sourcePath);
-  return {
-    file: resolvedPath || filePart || "",
-    heading: decodeURIComponent(headingPart)
-  };
-}
+};
 
 // main.ts
 var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
@@ -520,7 +615,7 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
     if (!cache || (0, import_obsidian2.resolveSubpath)(cache, "#" + headingText)) return;
     const behavior = resolveHeadingSettings(
       file,
-      cache,
+      { frontmatter: cache.frontmatter, headings: cache.headings },
       this.settings.rules,
       this.settings.fallback
     );
@@ -533,13 +628,11 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
     if (!insertionResult) return;
     const { insertionPoint, parentLevel, needsParentCreation } = insertionResult;
     const level = calculateHeadingLevel(behavior.headingLevel, parentLevel);
-    const parentLevelNum = behavior.headingLevel === "auto" ? 2 : Math.max(1, level - 1);
     const prevLineContent = insertionPoint.line > 0 ? editor.getLine(insertionPoint.line - 1) : "";
     const { text, linesAdded } = buildHeadingText(
       headingText,
       level,
       behavior.parentHeading || null,
-      parentLevelNum,
       needsParentCreation,
       prevLineContent
     );
