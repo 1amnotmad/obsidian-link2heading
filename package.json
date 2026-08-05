@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-link2heading",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Obsidian plugin that automatically creates headings when following links to non-existent headings",
 	"main": "main.js",
 	"scripts": {
