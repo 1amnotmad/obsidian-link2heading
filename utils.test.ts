@@ -1,13 +1,63 @@
+jest.mock("obsidian", () => ({
+	AbstractInputSuggest: class {},
+	PluginSettingTab: class {},
+	Setting: class {},
+	prepareFuzzySearch: jest.fn(),
+	setIcon: jest.fn(),
+}), { virtual: true });
+
 import {
 	getLineAfterFrontmatter,
 	calculateHeadingLevel,
 	findInsertionPoint,
 	buildHeadingText,
 	parseLinkWithHeading,
+	resolveHeadingSettings,
 	EditorLike,
 } from "./utils";
+import { parseSettingsData } from "./settings";
 import type { HeadingCache } from "obsidian";
-import type { Link2HeadingSettings } from "./settings";
+import type {
+	FolderRule,
+	FrontmatterRule,
+	HeadingRule,
+	HeadingRuleBehavior,
+	PathRule,
+	RuleFallback,
+} from "./settings";
+
+const noFallback: RuleFallback = { mode: "none" };
+
+function behavior(parentHeading: string): HeadingRuleBehavior {
+	return {
+		parentHeading,
+		headingLevel: "h2",
+		missingParentBehavior: "top",
+	};
+}
+
+function pathRule(path: string, parentHeading: string): PathRule {
+	return { ...behavior(parentHeading), matchType: "path", path };
+}
+
+function folderRule(folder: string, parentHeading: string): FolderRule {
+	return { ...behavior(parentHeading), matchType: "folder", folder };
+}
+
+function frontmatterRule(
+	property: string,
+	value: string,
+	parentHeading: string,
+	anyValue = false
+): FrontmatterRule {
+	return {
+		...behavior(parentHeading),
+		matchType: "frontmatter",
+		property,
+		value,
+		anyValue,
+	};
+}
 
 function createMockEditor(lines: string[]): EditorLike {
 	return {
@@ -30,6 +80,73 @@ function createMockHeading(
 		},
 	};
 }
+
+describe("parseSettingsData", () => {
+	it("uses fresh defaults for missing and legacy settings", () => {
+		expect(parseSettingsData(null)).toEqual({ rules: [], fallback: { mode: "none" } });
+		expect(parseSettingsData({
+			parentHeading: "Notes",
+			headingLevel: "h2",
+			missingParentBehavior: "create",
+		})).toEqual({ rules: [], fallback: { mode: "none" } });
+	});
+
+	it("keeps valid rules, discards malformed rules, and normalizes behavior values", () => {
+		const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+		const settings = parseSettingsData({
+			rules: [
+				{
+					matchType: "path",
+					path: "Projects/Meeting",
+					parentHeading: "Notes",
+					headingLevel: "h9",
+					missingParentBehavior: "invalid",
+				},
+				{ matchType: "folder", folder: 42 },
+			],
+			fallback: {
+				mode: "global",
+				rule: {
+					matchType: "global",
+					parentHeading: "Fallback",
+					headingLevel: "h1",
+					missingParentBehavior: "none",
+				},
+			},
+		});
+
+		expect(settings).toEqual({
+			rules: [{
+				matchType: "path",
+				path: "Projects/Meeting",
+				parentHeading: "Notes",
+				headingLevel: "auto",
+				missingParentBehavior: "top",
+			}],
+			fallback: {
+				mode: "global",
+				rule: {
+					matchType: "global",
+					parentHeading: "Fallback",
+					headingLevel: "h1",
+					missingParentBehavior: "none",
+				},
+			},
+		});
+		expect(warn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
+	it("resets a malformed Global fallback to Do Nothing", () => {
+		const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+		expect(parseSettingsData({
+			rules: "not-an-array",
+			fallback: { mode: "global", rule: { matchType: "global" } },
+		})).toEqual({ rules: [], fallback: { mode: "none" } });
+		expect(warn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+});
 
 describe("getLineAfterFrontmatter", () => {
 	it("returns 0 when no frontmatter exists", () => {
@@ -104,7 +221,7 @@ describe("calculateHeadingLevel", () => {
 });
 
 describe("findInsertionPoint", () => {
-	const defaultSettings: Link2HeadingSettings = {
+	const defaultSettings: HeadingRuleBehavior = {
 		parentHeading: "",
 		headingLevel: "auto",
 		missingParentBehavior: "top",
@@ -204,6 +321,235 @@ describe("findInsertionPoint", () => {
 		const result = findInsertionPoint(editor, [], settings);
 
 		expect(result).toBeNull();
+	});
+});
+
+describe("resolveHeadingSettings", () => {
+	describe("path rules", () => {
+		it("matches exact paths with optional .md and normalized slashes", () => {
+			const rules = [pathRule(" /Projects\\Active//Meeting.md ", "Path")];
+
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Active/Meeting.md" }, null, rules, noFallback
+			)).toEqual(behavior("Path"));
+		});
+
+		it("uses the full path for same-name notes", () => {
+			const rules = [pathRule("Archive/Meeting", "Archive")];
+
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Meeting.md" }, null, rules, noFallback
+			)).toBeNull();
+		});
+
+		it("skips empty criteria and uses the first matching rule", () => {
+			const rules = [
+				pathRule("", "Empty"),
+				pathRule("Note", "First"),
+				pathRule("Note.md", "Second"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, null, rules, noFallback
+			)).toEqual(behavior("First"));
+		});
+
+		it("beats folder and frontmatter rules regardless of array order", () => {
+			const rules: HeadingRule[] = [
+				frontmatterRule("type", "meeting", "Frontmatter"),
+				folderRule("Projects", "Folder"),
+				pathRule("Projects/Meeting", "Path"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Meeting.md" },
+				{ frontmatter: { type: "meeting" } },
+				rules,
+				noFallback
+			)).toEqual(behavior("Path"));
+		});
+	});
+
+	describe("folder rules", () => {
+		it.each(["Projects/Note.md", "Projects/Active/Note.md"])(
+			"matches direct and nested descendants: %s",
+			(path) => {
+				expect(resolveHeadingSettings(
+					{ path }, null, [folderRule("Projects/", "Folder")], noFallback
+				)).toEqual(behavior("Folder"));
+			}
+		);
+
+		it("checks folder boundaries", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Projects2/Note.md" }, null,
+				[folderRule("Projects/", "Folder")], noFallback
+			)).toBeNull();
+		});
+
+		it("normalizes leading, trailing, duplicate, and backslash separators", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Active/Note.md" }, null,
+				[folderRule(" /Projects\\Active// ", "Folder")], noFallback
+			)).toEqual(behavior("Folder"));
+		});
+
+		it("uses the deepest matching folder regardless of definition order", () => {
+			const rules = [
+				folderRule("Projects", "Shallow"),
+				folderRule("Projects/Active", "Deep"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Active/Note.md" }, null, rules, noFallback
+			)).toEqual(behavior("Deep"));
+		});
+
+		it("uses the first-defined rule for equal-depth matches", () => {
+			const rules = [
+				folderRule("Projects/Active", "First"),
+				folderRule("Projects/Active/", "Second"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Active/Note.md" }, null, rules, noFallback
+			)).toEqual(behavior("First"));
+		});
+
+		it("skips empty criteria and beats frontmatter rules", () => {
+			const rules: HeadingRule[] = [
+				frontmatterRule("type", "meeting", "Frontmatter"),
+				folderRule("", "Empty"),
+				folderRule("Projects", "Folder"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Note.md" },
+				{ frontmatter: { type: "meeting" } },
+				rules,
+				noFallback
+			)).toEqual(behavior("Folder"));
+		});
+	});
+
+	describe("frontmatter rules", () => {
+		it("matches property names case-insensitively and scalar values exactly", () => {
+			const rules = [frontmatterRule("TYPE", "meeting", "Frontmatter")];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, { frontmatter: { Type: "meeting" } }, rules, noFallback
+			)).toEqual(behavior("Frontmatter"));
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, { frontmatter: { type: "Meeting" } }, rules, noFallback
+			)).toBeNull();
+		});
+
+		it("matches an item in an array value", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" },
+				{ frontmatter: { tags: ["project", "urgent"] } },
+				[frontmatterRule("tags", "urgent", "Array")],
+				noFallback
+			)).toEqual(behavior("Array"));
+		});
+
+		it.each([false, null, 0, ""])("matches any existing value including %p", (value) => {
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" },
+				{ frontmatter: { status: value } },
+				[frontmatterRule("status", "stored", "Any", true)],
+				noFallback
+			)).toEqual(behavior("Any"));
+		});
+
+		it("does not match any-value when the property is absent", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, { frontmatter: {} },
+				[frontmatterRule("status", "", "Any", true)], noFallback
+			)).toBeNull();
+		});
+
+		it("does not coerce number or boolean values to strings", () => {
+			const rules = [
+				frontmatterRule("count", "1", "Number"),
+				frontmatterRule("active", "true", "Boolean"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" },
+				{ frontmatter: { count: 1, active: true } },
+				rules,
+				noFallback
+			)).toBeNull();
+		});
+
+		it("skips empty properties and values unless any-value is enabled", () => {
+			const rules = [
+				frontmatterRule("", "meeting", "Empty property"),
+				frontmatterRule("type", "", "Empty value"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, { frontmatter: { type: "" } }, rules, noFallback
+			)).toBeNull();
+		});
+
+		it("uses the first-defined matching rule", () => {
+			const rules = [
+				frontmatterRule("type", "meeting", "First"),
+				frontmatterRule("type", "meeting", "Second"),
+			];
+
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, { frontmatter: { type: "meeting" } }, rules, noFallback
+			)).toEqual(behavior("First"));
+		});
+	});
+
+	describe("fallback and precedence", () => {
+		const globalFallback: RuleFallback = {
+			mode: "global",
+			rule: { ...behavior("Global"), matchType: "global" },
+		};
+
+		it("uses frontmatter before Global", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" },
+				{ frontmatter: { type: "meeting" } },
+				[frontmatterRule("type", "meeting", "Frontmatter")],
+				globalFallback
+			)).toEqual(behavior("Frontmatter"));
+		});
+
+		it("returns Global when no rule matches and null for Do Nothing", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, null, [], globalFallback
+			)).toEqual(behavior("Global"));
+			expect(resolveHeadingSettings(
+				{ path: "Note.md" }, null, [], noFallback
+			)).toBeNull();
+		});
+
+		it("matches path and folder rules without metadata", () => {
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Note.md" }, null,
+				[pathRule("Projects/Note", "Path")], noFallback
+			)).toEqual(behavior("Path"));
+			expect(resolveHeadingSettings(
+				{ path: "Projects/Note.md" }, null,
+				[folderRule("Projects", "Folder")], noFallback
+			)).toEqual(behavior("Folder"));
+		});
+
+		it("returns behavior fields only", () => {
+			const result = resolveHeadingSettings(
+				{ path: "Note.md" }, null, [pathRule("Note", "Path")], noFallback
+			);
+
+			expect(result).toEqual(behavior("Path"));
+			expect(result).not.toHaveProperty("matchType");
+			expect(result).not.toHaveProperty("path");
+		});
 	});
 });
 

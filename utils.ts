@@ -1,5 +1,17 @@
 import type { HeadingCache, EditorPosition } from "obsidian";
-import type { Link2HeadingSettings } from "./settings";
+import type {
+	HeadingRule,
+	HeadingRuleBehavior,
+	RuleFallback,
+} from "./settings";
+
+export interface RuleMatchFile {
+	path: string;
+}
+
+export interface RuleMatchMetadata {
+	frontmatter?: Record<string, unknown>;
+}
 
 export interface InsertionResult {
 	insertionPoint: EditorPosition;
@@ -11,6 +23,82 @@ export interface InsertionResult {
 export interface EditorLike {
 	getLine(line: number): string;
 	lineCount(): number;
+}
+
+function normalizeSlashes(path: string): string {
+	return path.trim()
+		.replace(/\\/g, "/")
+		.replace(/^\/+/, "")
+		.replace(/\/{2,}/g, "/");
+}
+
+function normalizePath(path: string): string {
+	return normalizeSlashes(path).replace(/\.md$/, "");
+}
+
+function normalizeFolder(folder: string): string {
+	return normalizeSlashes(folder).replace(/\/+$/, "");
+}
+
+function getBehavior(rule: HeadingRuleBehavior): HeadingRuleBehavior {
+	return {
+		parentHeading: rule.parentHeading,
+		headingLevel: rule.headingLevel,
+		missingParentBehavior: rule.missingParentBehavior,
+	};
+}
+
+/** Resolves effective heading behavior using fixed rule-type precedence. */
+export function resolveHeadingSettings(
+	file: RuleMatchFile,
+	metadata: RuleMatchMetadata | null,
+	rules: HeadingRule[],
+	fallback: RuleFallback
+): HeadingRuleBehavior | null {
+	const filePath = normalizePath(file.path);
+
+	for (const rule of rules) {
+		if (rule.matchType !== "path") continue;
+		const rulePath = normalizePath(rule.path);
+		if (rulePath && rulePath === filePath) return getBehavior(rule);
+	}
+
+	let folderMatch: HeadingRule | null = null;
+	let folderMatchDepth = -1;
+	for (const rule of rules) {
+		if (rule.matchType !== "folder") continue;
+		const folder = normalizeFolder(rule.folder);
+		if (!folder || !filePath.startsWith(folder + "/")) continue;
+
+		const depth = folder.split("/").length;
+		if (depth > folderMatchDepth) {
+			folderMatch = rule;
+			folderMatchDepth = depth;
+		}
+	}
+	if (folderMatch) return getBehavior(folderMatch);
+
+	const frontmatter = metadata?.frontmatter;
+	if (frontmatter) {
+		for (const rule of rules) {
+			if (rule.matchType !== "frontmatter") continue;
+			const property = rule.property.trim();
+			if (!property || (!rule.anyValue && !rule.value)) continue;
+
+			const key = Object.keys(frontmatter).find(
+				(candidate) => candidate.toLowerCase() === property.toLowerCase()
+			);
+			if (key === undefined) continue;
+			if (rule.anyValue) return getBehavior(rule);
+
+			const value = frontmatter[key];
+			if (Array.isArray(value) ? value.includes(rule.value) : value === rule.value) {
+				return getBehavior(rule);
+			}
+		}
+	}
+
+	return fallback.mode === "global" ? getBehavior(fallback.rule) : null;
 }
 
 /** Returns the first line after YAML frontmatter, or 0 if none exists. */
@@ -40,7 +128,7 @@ export function calculateHeadingLevel(
 export function findInsertionPoint(
 	editor: EditorLike,
 	existingHeadings: HeadingCache[] | undefined,
-	settings: Link2HeadingSettings
+	settings: HeadingRuleBehavior
 ): InsertionResult | null {
 	const topLine = getLineAfterFrontmatter(editor);
 

@@ -1,6 +1,13 @@
 import { Plugin, MarkdownView, TFile, resolveSubpath, Editor, HeadingCache } from "obsidian";
-import { Link2HeadingSettings, DEFAULT_SETTINGS, Link2HeadingSettingTab } from "./settings";
-import { calculateHeadingLevel, findInsertionPoint, buildHeadingText, parseLinkWithHeading } from "./utils";
+import { Link2HeadingSettings, Link2HeadingSettingTab, parseSettingsData } from "./settings";
+import type { HeadingRuleBehavior } from "./settings";
+import {
+	calculateHeadingLevel,
+	findInsertionPoint,
+	buildHeadingText,
+	parseLinkWithHeading,
+	resolveHeadingSettings,
+} from "./utils";
 
 /**
  * Link2Heading Plugin
@@ -55,7 +62,7 @@ export default class Link2HeadingPlugin extends Plugin {
 	onunload() {}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings = parseSettingsData(await this.loadData());
 	}
 
 	async saveSettings() {
@@ -66,21 +73,34 @@ export default class Link2HeadingPlugin extends Plugin {
 		const cache = this.app.metadataCache.getFileCache(file);
 		if (!cache || resolveSubpath(cache, "#" + headingText)) return;
 
+		const behavior = resolveHeadingSettings(
+			file,
+			cache,
+			this.settings.rules,
+			this.settings.fallback
+		);
+		if (!behavior) return;
+
 		const editor = view.editor;
-		if (editor) await this.createHeading(headingText, editor, cache.headings);
+		if (editor) await this.createHeading(headingText, editor, cache.headings, behavior);
 	}
 
-	private async createHeading(headingText: string, editor: Editor, existingHeadings: HeadingCache[] | undefined) {
-		const insertionResult = findInsertionPoint(editor, existingHeadings, this.settings);
+	private async createHeading(
+		headingText: string,
+		editor: Editor,
+		existingHeadings: HeadingCache[] | undefined,
+		behavior: HeadingRuleBehavior
+	) {
+		const insertionResult = findInsertionPoint(editor, existingHeadings, behavior);
 		if (!insertionResult) return;
 
 		const { insertionPoint, parentLevel, needsParentCreation } = insertionResult;
-		const level = calculateHeadingLevel(this.settings.headingLevel, parentLevel);
-		const parentLevelNum = this.settings.headingLevel === "auto" ? 2 : Math.max(1, level - 1);
+		const level = calculateHeadingLevel(behavior.headingLevel, parentLevel);
+		const parentLevelNum = behavior.headingLevel === "auto" ? 2 : Math.max(1, level - 1);
 		const prevLineContent = insertionPoint.line > 0 ? editor.getLine(insertionPoint.line - 1) : "";
 
 		const { text, linesAdded } = buildHeadingText(
-			headingText, level, this.settings.parentHeading || null,
+			headingText, level, behavior.parentHeading || null,
 			parentLevelNum, needsParentCreation, prevLineContent
 		);
 
