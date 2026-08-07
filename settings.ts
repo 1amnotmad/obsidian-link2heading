@@ -276,7 +276,9 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 		containerEl.empty();
 		containerEl.addClass("link2heading-settings");
 
-		containerEl.createEl("h2", { text: "Heading Rules" });
+		const titleEl = containerEl.createDiv("link2heading-title");
+		titleEl.createEl("strong", { text: "Link2Heading" });
+
 		containerEl.createEl("p", {
 			text: "Rules are checked in priority order (highest to lowest):\n1. File    2. Folder    3. Heading    4. Frontmatter Property    5. Global",
 			cls: "link2heading-rules-intro",
@@ -371,6 +373,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 
 	private renderRuleCard(containerEl: HTMLElement, rule: HeadingRuleEntry, index: number): void {
 		const card = containerEl.createDiv("link2heading-rule-card");
+
 		const header = card.createDiv("link2heading-rule-header");
 		header.createEl("strong", { text: `Rule ${index + 1}` });
 
@@ -385,7 +388,10 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 			this.display();
 		});
 
-		new Setting(card)
+		const matchingSection = card.createDiv("link2heading-section");
+		matchingSection.createDiv({ text: "Rule Matching", cls: "link2heading-section-label" });
+
+		new Setting(matchingSection)
 			.setName("Match type")
 			.addDropdown((dropdown) => dropdown
 				.addOption("file", "File")
@@ -406,15 +412,19 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 				})
 			);
 
-		this.renderMatchCriteria(card, rule);
+		this.renderMatchCriteria(matchingSection, rule);
+
 		card.createDiv("link2heading-rule-separator");
-		this.renderBehaviorControls(card, rule);
+
+		const settingsSection = card.createDiv("link2heading-section");
+		settingsSection.createDiv({ text: "Settings", cls: "link2heading-section-label" });
+		this.renderBehaviorControls(settingsSection, rule);
 	}
 
-	private renderMatchCriteria(card: HTMLElement, rule: HeadingRuleEntry): void {
+	private renderMatchCriteria(containerEl: HTMLElement, rule: HeadingRuleEntry): void {
 		switch (rule.matchType) {
 			case "file":
-				new Setting(card)
+				new Setting(containerEl)
 					.setName("File")
 					.addText((text) => {
 						text.setPlaceholder("Projects/Active/Meeting")
@@ -434,7 +444,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 					});
 				break;
 			case "folder":
-				new Setting(card)
+				new Setting(containerEl)
 					.setName("Folder")
 					.addText((text) => {
 						text.setPlaceholder("Projects/Active/")
@@ -454,7 +464,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 					});
 				break;
 			case "heading": {
-				const setting = new Setting(card).setName("Heading");
+				const setting = new Setting(containerEl).setName("Heading");
 				setting.addText((text) => {
 					text.setPlaceholder("### Events by date")
 						.setValue(rule.heading);
@@ -468,7 +478,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 				break;
 			}
 			case "frontmatter": {
-				new Setting(card)
+				new Setting(containerEl)
 					.setName("Property")
 					.addText((text) => text
 						.setPlaceholder("property name")
@@ -479,7 +489,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 						})
 					);
 
-				const valueSetting = new Setting(card)
+				const valueSetting = new Setting(containerEl)
 					.setName("Value")
 					.addText((text) => text
 						.setPlaceholder("meeting")
@@ -491,7 +501,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 					)
 					.setDisabled(rule.anyValue);
 
-				const anyValueSetting = new Setting(card)
+				const anyValueSetting = new Setting(containerEl)
 					.setName("Any value")
 					.setDesc("Match if the property exists, regardless of its value.");
 				const checkbox = anyValueSetting.controlEl.createEl("input");
@@ -510,17 +520,35 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 
 	private renderGlobalRuleCard(containerEl: HTMLElement, rule: GlobalRule): void {
 		const card = containerEl.createDiv("link2heading-rule-card");
-		const header = card.createDiv("link2heading-rule-header");
-		header.createEl("strong", { text: "Global Rule" });
 
-		const matchType = new Setting(card).setName("Match type");
-		matchType.controlEl.createSpan({ text: "Global" });
+		const header = card.createDiv("link2heading-rule-header");
+		const titleArea = header.createDiv("link2heading-global-title-area");
+		titleArea.createEl("strong", { text: "Global Rule" });
+		titleArea.createSpan({
+			text: "Applies to all notes not matched by another rule.",
+			cls: "link2heading-global-desc",
+		});
+
+		const removeButton = header.createEl("button", {
+			cls: "clickable-icon link2heading-remove-rule",
+			attr: { "aria-label": "Remove Global Rule" },
+		});
+		setIcon(removeButton, "trash");
+		removeButton.addEventListener("click", async () => {
+			this.plugin.settings.fallback = { mode: "none" };
+			await this.plugin.saveSettings();
+			this.display();
+		});
+
 		card.createDiv("link2heading-rule-separator");
-		this.renderBehaviorControls(card, rule);
+
+		const settingsSection = card.createDiv("link2heading-section");
+		settingsSection.createDiv({ text: "Settings", cls: "link2heading-section-label" });
+		this.renderBehaviorControls(settingsSection, rule);
 	}
 
-	private renderBehaviorControls(card: HTMLElement, behavior: HeadingRuleBehavior): void {
-		const parentHeadingSetting = new Setting(card).setName("Parent heading");
+	private renderBehaviorControls(containerEl: HTMLElement, behavior: HeadingRuleBehavior): void {
+		const parentHeadingSetting = new Setting(containerEl).setName("Parent heading");
 		parentHeadingSetting.addText((text) => {
 			text.setPlaceholder("## Notes (empty inserts at top)")
 				.setValue(behavior.parentHeading);
@@ -536,7 +564,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 			});
 		});
 
-		new Setting(card)
+		new Setting(containerEl)
 			.setName("Heading level")
 			.addDropdown((dropdown) => dropdown
 				.addOption("auto", "One level below parent")
@@ -554,7 +582,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 				})
 			);
 
-		new Setting(card)
+		new Setting(containerEl)
 			.setName("If parent missing")
 			.addDropdown((dropdown) => dropdown
 				.addOption("top", "Insert at top")

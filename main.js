@@ -342,7 +342,8 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
     this.closeInputSuggests();
     containerEl.empty();
     containerEl.addClass("link2heading-settings");
-    containerEl.createEl("h2", { text: "Heading Rules" });
+    const titleEl = containerEl.createDiv("link2heading-title");
+    titleEl.createEl("strong", { text: "Link2Heading" });
     containerEl.createEl("p", {
       text: "Rules are checked in priority order (highest to lowest):\n1. File    2. Folder    3. Heading    4. Frontmatter Property    5. Global",
       cls: "link2heading-rules-intro"
@@ -422,7 +423,9 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
       await this.plugin.saveSettings();
       this.display();
     });
-    new import_obsidian.Setting(card).setName("Match type").addDropdown(
+    const matchingSection = card.createDiv("link2heading-section");
+    matchingSection.createDiv({ text: "Rule Matching", cls: "link2heading-section-label" });
+    new import_obsidian.Setting(matchingSection).setName("Match type").addDropdown(
       (dropdown) => dropdown.addOption("file", "File").addOption("folder", "Folder").addOption("heading", "Heading").addOption("frontmatter", "Frontmatter Property").setValue(rule.matchType).onChange(async (value) => {
         if (value !== "file" && value !== "folder" && value !== "heading" && value !== "frontmatter") return;
         const replacement = this.createRule(value);
@@ -434,14 +437,16 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
         this.display();
       })
     );
-    this.renderMatchCriteria(card, rule);
+    this.renderMatchCriteria(matchingSection, rule);
     card.createDiv("link2heading-rule-separator");
-    this.renderBehaviorControls(card, rule);
+    const settingsSection = card.createDiv("link2heading-section");
+    settingsSection.createDiv({ text: "Settings", cls: "link2heading-section-label" });
+    this.renderBehaviorControls(settingsSection, rule);
   }
-  renderMatchCriteria(card, rule) {
+  renderMatchCriteria(containerEl, rule) {
     switch (rule.matchType) {
       case "file":
-        new import_obsidian.Setting(card).setName("File").addText((text) => {
+        new import_obsidian.Setting(containerEl).setName("File").addText((text) => {
           text.setPlaceholder("Projects/Active/Meeting").setValue(rule.path).onChange(async (value) => {
             rule.path = value;
             await this.plugin.saveSettings();
@@ -456,7 +461,7 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
         });
         break;
       case "folder":
-        new import_obsidian.Setting(card).setName("Folder").addText((text) => {
+        new import_obsidian.Setting(containerEl).setName("Folder").addText((text) => {
           text.setPlaceholder("Projects/Active/").setValue(rule.folder).onChange(async (value) => {
             rule.folder = value;
             await this.plugin.saveSettings();
@@ -471,7 +476,7 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
         });
         break;
       case "heading": {
-        const setting = new import_obsidian.Setting(card).setName("Heading");
+        const setting = new import_obsidian.Setting(containerEl).setName("Heading");
         setting.addText((text) => {
           text.setPlaceholder("### Events by date").setValue(rule.heading);
           const validate = this.addHeadingValidation(setting, text.inputEl, rule.heading);
@@ -484,19 +489,19 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
         break;
       }
       case "frontmatter": {
-        new import_obsidian.Setting(card).setName("Property").addText(
+        new import_obsidian.Setting(containerEl).setName("Property").addText(
           (text) => text.setPlaceholder("property name").setValue(rule.property).onChange(async (value) => {
             rule.property = value;
             await this.plugin.saveSettings();
           })
         );
-        const valueSetting = new import_obsidian.Setting(card).setName("Value").addText(
+        const valueSetting = new import_obsidian.Setting(containerEl).setName("Value").addText(
           (text) => text.setPlaceholder("meeting").setValue(rule.value).onChange(async (value) => {
             rule.value = value;
             await this.plugin.saveSettings();
           })
         ).setDisabled(rule.anyValue);
-        const anyValueSetting = new import_obsidian.Setting(card).setName("Any value").setDesc("Match if the property exists, regardless of its value.");
+        const anyValueSetting = new import_obsidian.Setting(containerEl).setName("Any value").setDesc("Match if the property exists, regardless of its value.");
         const checkbox = anyValueSetting.controlEl.createEl("input");
         checkbox.type = "checkbox";
         checkbox.checked = rule.anyValue;
@@ -513,14 +518,29 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
   renderGlobalRuleCard(containerEl, rule) {
     const card = containerEl.createDiv("link2heading-rule-card");
     const header = card.createDiv("link2heading-rule-header");
-    header.createEl("strong", { text: "Global Rule" });
-    const matchType = new import_obsidian.Setting(card).setName("Match type");
-    matchType.controlEl.createSpan({ text: "Global" });
+    const titleArea = header.createDiv("link2heading-global-title-area");
+    titleArea.createEl("strong", { text: "Global Rule" });
+    titleArea.createSpan({
+      text: "Applies to all notes not matched by another rule.",
+      cls: "link2heading-global-desc"
+    });
+    const removeButton = header.createEl("button", {
+      cls: "clickable-icon link2heading-remove-rule",
+      attr: { "aria-label": "Remove Global Rule" }
+    });
+    (0, import_obsidian.setIcon)(removeButton, "trash");
+    removeButton.addEventListener("click", async () => {
+      this.plugin.settings.fallback = { mode: "none" };
+      await this.plugin.saveSettings();
+      this.display();
+    });
     card.createDiv("link2heading-rule-separator");
-    this.renderBehaviorControls(card, rule);
+    const settingsSection = card.createDiv("link2heading-section");
+    settingsSection.createDiv({ text: "Settings", cls: "link2heading-section-label" });
+    this.renderBehaviorControls(settingsSection, rule);
   }
-  renderBehaviorControls(card, behavior) {
-    const parentHeadingSetting = new import_obsidian.Setting(card).setName("Parent heading");
+  renderBehaviorControls(containerEl, behavior) {
+    const parentHeadingSetting = new import_obsidian.Setting(containerEl).setName("Parent heading");
     parentHeadingSetting.addText((text) => {
       text.setPlaceholder("## Notes (empty inserts at top)").setValue(behavior.parentHeading);
       const validate = this.addHeadingValidation(
@@ -534,14 +554,14 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(card).setName("Heading level").addDropdown(
+    new import_obsidian.Setting(containerEl).setName("Heading level").addDropdown(
       (dropdown) => dropdown.addOption("auto", "One level below parent").addOption("h1", "H1").addOption("h2", "H2").addOption("h3", "H3").addOption("h4", "H4").addOption("h5", "H5").addOption("h6", "H6").setValue(behavior.headingLevel).onChange(async (value) => {
         if (!isHeadingLevel(value)) return;
         behavior.headingLevel = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(card).setName("If parent missing").addDropdown(
+    new import_obsidian.Setting(containerEl).setName("If parent missing").addDropdown(
       (dropdown) => dropdown.addOption("top", "Insert at top").addOption("create", "Create parent").addOption("none", "Do nothing").setValue(behavior.missingParentBehavior).onChange(async (value) => {
         if (!isMissingParentBehavior(value)) return;
         behavior.missingParentBehavior = value;
