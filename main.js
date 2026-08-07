@@ -33,6 +33,7 @@ var import_obsidian2 = require("obsidian");
 var import_obsidian = require("obsidian");
 
 // utils.ts
+var PENDING_HEADING_EXPIRY_MS = 5e3;
 function parseHeadingValue(value) {
   const match = /^(#+) (.*\S.*)$/.exec(value);
   if (!match) return null;
@@ -46,6 +47,16 @@ function normalizeSlashes(path) {
 }
 function normalizePath(path) {
   return normalizeSlashes(path).replace(/\.md$/, "");
+}
+function isPendingHeadingForFile(filePath, pending, now = Date.now()) {
+  const age = now - pending.createdAt;
+  if (age < 0 || age > PENDING_HEADING_EXPIRY_MS) return false;
+  const openedPath = normalizePath(filePath);
+  const pendingPath = normalizePath(pending.file);
+  if (!openedPath || !pendingPath) return false;
+  if (openedPath === pendingPath) return true;
+  if (pendingPath.includes("/")) return false;
+  return openedPath.slice(openedPath.lastIndexOf("/") + 1) === pendingPath;
 }
 function normalizeFolder(folder) {
   return normalizeSlashes(folder).replace(/\/+$/, "");
@@ -174,13 +185,22 @@ function buildHeadingText(headingText, level, parentHeading, needsParentCreation
   return { text, linesAdded };
 }
 function parseLinkWithHeading(linktext, sourcePath, resolveFile) {
-  if (!linktext.includes("#")) return null;
-  const [filePart, headingPart] = linktext.split("#");
+  const headingSeparator = linktext.indexOf("#");
+  if (headingSeparator === -1) return null;
+  const filePart = linktext.slice(0, headingSeparator);
+  const headingPart = linktext.slice(headingSeparator + 1);
   if (!headingPart) return null;
+  let heading;
+  try {
+    heading = decodeURIComponent(headingPart);
+  } catch (e) {
+    heading = headingPart;
+  }
+  if (/[\r\n]/.test(heading)) return null;
   const resolvedPath = resolveFile(filePart || "", sourcePath);
   return {
-    file: resolvedPath || filePart || "",
-    heading: decodeURIComponent(headingPart)
+    file: resolvedPath || filePart || sourcePath,
+    heading
   };
 }
 
@@ -598,26 +618,29 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
         var _a;
         return ((_a = this.app.metadataCache.getFirstLinkpathDest(linkPath, srcPath)) == null ? void 0 : _a.path) || null;
       });
-      if (parsed) this.pendingHeading = parsed;
-      return originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+      const pendingHeading = parsed ? { ...parsed, createdAt: Date.now() } : null;
+      this.pendingHeading = pendingHeading;
+      try {
+        return await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+      } catch (error) {
+        if (this.pendingHeading === pendingHeading) this.pendingHeading = null;
+        throw error;
+      }
     };
     this.register(() => {
       this.app.workspace.openLinkText = originalOpenLinkText;
     });
     this.registerEvent(
       this.app.workspace.on("file-open", async (file) => {
-        if (!file || !this.pendingHeading) return;
+        const pendingHeading = this.pendingHeading;
+        if (!file || !pendingHeading) return;
         await new Promise((resolve) => setTimeout(resolve, 50));
-        const isExpectedFile = this.pendingHeading.file === file.path || file.path.endsWith(this.pendingHeading.file + ".md") || this.pendingHeading.file === file.basename;
-        if (!isExpectedFile) {
-          this.pendingHeading = null;
-          return;
-        }
-        const headingText = this.pendingHeading.heading;
+        if (this.pendingHeading !== pendingHeading) return;
         this.pendingHeading = null;
+        if (!isPendingHeadingForFile(file.path, pendingHeading)) return;
         const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
         if ((view == null ? void 0 : view.file) === file) {
-          await this.handleHeadingNavigation(file, headingText, view);
+          await this.handleHeadingNavigation(file, pendingHeading.heading, view);
         }
       })
     );

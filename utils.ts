@@ -19,6 +19,13 @@ export interface RuleMatchHeading {
 	level: number;
 }
 
+export interface PendingHeadingTarget {
+	file: string;
+	createdAt: number;
+}
+
+export const PENDING_HEADING_EXPIRY_MS = 5000;
+
 export interface InsertionResult {
 	insertionPoint: EditorPosition;
 	parentLevel: number | null;
@@ -51,6 +58,26 @@ function normalizeSlashes(path: string): string {
 
 function normalizePath(path: string): string {
 	return normalizeSlashes(path).replace(/\.md$/, "");
+}
+
+/** Checks that a pending heading navigation is fresh and belongs to the opened file. */
+export function isPendingHeadingForFile(
+	filePath: string,
+	pending: PendingHeadingTarget,
+	now = Date.now()
+): boolean {
+	const age = now - pending.createdAt;
+	if (age < 0 || age > PENDING_HEADING_EXPIRY_MS) return false;
+
+	const openedPath = normalizePath(filePath);
+	const pendingPath = normalizePath(pending.file);
+	if (!openedPath || !pendingPath) return false;
+	if (openedPath === pendingPath) return true;
+
+	// Unresolved links may only have a basename. Compare the whole basename,
+	// rather than using a suffix match that lets AnotherNote match Note.
+	if (pendingPath.includes("/")) return false;
+	return openedPath.slice(openedPath.lastIndexOf("/") + 1) === pendingPath;
 }
 
 function normalizeFolder(folder: string): string {
@@ -230,14 +257,24 @@ export function parseLinkWithHeading(
 	sourcePath: string,
 	resolveFile: (linkPath: string, sourcePath: string) => string | null
 ): { file: string; heading: string } | null {
-	if (!linktext.includes("#")) return null;
+	const headingSeparator = linktext.indexOf("#");
+	if (headingSeparator === -1) return null;
 
-	const [filePart, headingPart] = linktext.split("#");
+	const filePart = linktext.slice(0, headingSeparator);
+	const headingPart = linktext.slice(headingSeparator + 1);
 	if (!headingPart) return null;
+
+	let heading: string;
+	try {
+		heading = decodeURIComponent(headingPart);
+	} catch {
+		heading = headingPart;
+	}
+	if (/[\r\n]/.test(heading)) return null;
 
 	const resolvedPath = resolveFile(filePart || "", sourcePath);
 	return {
-		file: resolvedPath || filePart || "",
-		heading: decodeURIComponent(headingPart),
+		file: resolvedPath || filePart || sourcePath,
+		heading,
 	};
 }

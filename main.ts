@@ -5,6 +5,7 @@ import {
 	calculateHeadingLevel,
 	findInsertionPoint,
 	buildHeadingText,
+	isPendingHeadingForFile,
 	parseLinkWithHeading,
 	resolveHeadingSettings,
 } from "./utils";
@@ -15,7 +16,7 @@ import {
  */
 export default class Link2HeadingPlugin extends Plugin {
 	settings: Link2HeadingSettings;
-	private pendingHeading: { file: string; heading: string } | null = null;
+	private pendingHeading: { file: string; heading: string; createdAt: number } | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -27,33 +28,33 @@ export default class Link2HeadingPlugin extends Plugin {
 			const parsed = parseLinkWithHeading(linktext, sourcePath, (linkPath, srcPath) => {
 				return this.app.metadataCache.getFirstLinkpathDest(linkPath, srcPath)?.path || null;
 			});
-			if (parsed) this.pendingHeading = parsed;
-			return originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+			const pendingHeading = parsed ? { ...parsed, createdAt: Date.now() } : null;
+			this.pendingHeading = pendingHeading;
+
+			try {
+				return await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+			} catch (error) {
+				if (this.pendingHeading === pendingHeading) this.pendingHeading = null;
+				throw error;
+			}
 		};
 		this.register(() => { this.app.workspace.openLinkText = originalOpenLinkText; });
 
 		// Process heading creation after file opens
 		this.registerEvent(
 			this.app.workspace.on("file-open", async (file) => {
-				if (!file || !this.pendingHeading) return;
+				const pendingHeading = this.pendingHeading;
+				if (!file || !pendingHeading) return;
 
 				await new Promise((resolve) => setTimeout(resolve, 50));
-
-				const isExpectedFile = this.pendingHeading.file === file.path ||
-					file.path.endsWith(this.pendingHeading.file + ".md") ||
-					this.pendingHeading.file === file.basename;
-
-				if (!isExpectedFile) {
-					this.pendingHeading = null;
-					return;
-				}
-
-				const headingText = this.pendingHeading.heading;
+				if (this.pendingHeading !== pendingHeading) return;
 				this.pendingHeading = null;
+
+				if (!isPendingHeadingForFile(file.path, pendingHeading)) return;
 
 				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (view?.file === file) {
-					await this.handleHeadingNavigation(file, headingText, view);
+					await this.handleHeadingNavigation(file, pendingHeading.heading, view);
 				}
 			})
 		);

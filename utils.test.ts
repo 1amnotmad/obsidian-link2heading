@@ -12,6 +12,8 @@ import {
 	calculateHeadingLevel,
 	findInsertionPoint,
 	buildHeadingText,
+	isPendingHeadingForFile,
+	PENDING_HEADING_EXPIRY_MS,
 	parseLinkWithHeading,
 	parseHeadingValue,
 	resolveHeadingSettings,
@@ -766,7 +768,7 @@ describe("parseLinkWithHeading", () => {
 		const result = parseLinkWithHeading("#heading", "source.md", () => null);
 
 		expect(result).toEqual({
-			file: "",
+			file: "source.md",
 			heading: "heading",
 		});
 	});
@@ -783,7 +785,72 @@ describe("parseLinkWithHeading", () => {
 		expect(result?.heading).toBe("Hello & World");
 	});
 
+	it("preserves hash characters after the heading separator", () => {
+		const result = parseLinkWithHeading("note#Issue #123", "", mockResolve);
+
+		expect(result?.heading).toBe("Issue #123");
+	});
+
+	it.each([
+		"note#First%0A%0Ainjected",
+		"note#First%0Dinjected",
+		"note#First\ninjected",
+	])("rejects multiline headings: %p", (linktext) => {
+		expect(parseLinkWithHeading(linktext, "", mockResolve)).toBeNull();
+	});
+
+	it("keeps malformed percent encoding as literal text instead of throwing", () => {
+		expect(() => parseLinkWithHeading("note#100% done", "", mockResolve)).not.toThrow();
+		expect(parseLinkWithHeading("note#100% done", "", mockResolve)?.heading).toBe("100% done");
+	});
+
 	it("returns null when heading part is empty", () => {
 		expect(parseLinkWithHeading("note#", "", mockResolve)).toBeNull();
+	});
+});
+
+describe("isPendingHeadingForFile", () => {
+	const createdAt = 1000;
+
+	it.each([
+		["Projects/Note.md", "Projects/Note"],
+		["Projects\\Note.md", " /Projects/Note.md "],
+		["Projects/Note.md", "Note"],
+	])("matches normalized exact paths and unresolved basenames", (filePath, pendingFile) => {
+		expect(isPendingHeadingForFile(
+			filePath,
+			{ file: pendingFile, createdAt },
+			createdAt
+		)).toBe(true);
+	});
+
+	it.each([
+		["AnotherNote.md", "Note"],
+		["Folder/AnotherNote.md", "Note.md"],
+		["Archive/Note.md", "Projects/Note"],
+	])("does not suffix-match or ignore a resolved folder: %s / %s", (filePath, pendingFile) => {
+		expect(isPendingHeadingForFile(
+			filePath,
+			{ file: pendingFile, createdAt },
+			createdAt
+		)).toBe(false);
+	});
+
+	it("rejects expired, future, and empty pending destinations", () => {
+		expect(isPendingHeadingForFile(
+			"Note.md",
+			{ file: "Note", createdAt },
+			createdAt + PENDING_HEADING_EXPIRY_MS + 1
+		)).toBe(false);
+		expect(isPendingHeadingForFile(
+			"Note.md",
+			{ file: "Note", createdAt },
+			createdAt - 1
+		)).toBe(false);
+		expect(isPendingHeadingForFile(
+			"Note.md",
+			{ file: "", createdAt },
+			createdAt
+		)).toBe(false);
 	});
 });

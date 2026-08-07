@@ -2,13 +2,15 @@
 
 ## Development Setup
 
+Development requires Node.js 22 or newer.
+
 ```bash
 # Clone the repository
 git clone https://github.com/1amnotmad/obsidian-link2heading.git
 cd obsidian-link2heading
 
-# Install dependencies
-npm install
+# Install the locked dependencies
+npm ci
 
 # Build for development (watch mode)
 npm run dev
@@ -28,6 +30,7 @@ npm test -- --coverage
 ```
 link2heading/
 ├── main.ts          # Plugin entry point and core logic
+├── main.test.ts     # Core navigation integration tests
 ├── settings.ts      # Settings interface and UI
 ├── utils.ts         # Pure utility functions (testable)
 ├── utils.test.ts    # Unit tests
@@ -51,13 +54,14 @@ The plugin uses a simple architecture:
 
 ## Testing
 
-Tests are written with Jest and cover the pure utility functions:
+Tests are written with Jest and cover the core plugin flow and pure utility functions, including:
 
 - `getLineAfterFrontmatter` — Frontmatter detection
 - `calculateHeadingLevel` — Heading level logic
 - `findInsertionPoint` — Insertion point calculation
 - `buildHeadingText` — Markdown generation
 - `parseLinkWithHeading` — Link parsing
+- Pending navigation state and target-file matching
 
 Run tests:
 ```bash
