@@ -471,7 +471,7 @@ export class Link2HeadingSettingTab extends PluginSettingTab {
 				new Setting(card)
 					.setName("Property")
 					.addText((text) => text
-						.setPlaceholder("type")
+						.setPlaceholder("property name")
 						.setValue(rule.property)
 						.onChange(async (value) => {
 							rule.property = value;

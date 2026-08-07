@@ -485,7 +485,7 @@ var Link2HeadingSettingTab = class extends import_obsidian.PluginSettingTab {
       }
       case "frontmatter": {
         new import_obsidian.Setting(card).setName("Property").addText(
-          (text) => text.setPlaceholder("type").setValue(rule.property).onChange(async (value) => {
+          (text) => text.setPlaceholder("property name").setValue(rule.property).onChange(async (value) => {
             rule.property = value;
             await this.plugin.saveSettings();
           })
