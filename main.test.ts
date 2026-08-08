@@ -113,9 +113,10 @@ describe("pending heading navigation", () => {
 		).mockResolvedValue(undefined);
 		const file = { path: "Note.md", basename: "Note" };
 		const view = { file };
-		workspace.getActiveViewOfType.mockReturnValue(view);
 
-		await workspace.openLinkText("Note#Heading", "Source.md");
+		const navigation = workspace.openLinkText("Note#Heading", "Source.md");
+		workspace.getActiveViewOfType.mockReturnValue(view);
+		await navigation;
 		const handling = fileOpenHandler(file);
 		await jest.advanceTimersByTimeAsync(50);
 		await handling;
@@ -124,4 +125,28 @@ describe("pending heading navigation", () => {
 		expect(handleHeading).toHaveBeenCalledWith(file, "Heading", view);
 		expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).toBeNull();
 	});
+
+	it.each(["#new heading", "Current note#new heading"])(
+		"handles a missing same-note heading without a file-open event: %s",
+		async (linktext) => {
+			const { plugin, workspace } = await loadPlugin(
+				(linkPath) => linkPath ? `${linkPath}.md` : null
+			);
+			const handleHeading = jest.spyOn(
+				plugin as unknown as { handleHeadingNavigation: () => Promise<void> },
+				"handleHeadingNavigation"
+			).mockResolvedValue(undefined);
+			const file = { path: "Current note.md", basename: "Current note" };
+			const view = { file };
+			workspace.getActiveViewOfType.mockReturnValue(view);
+
+			const navigation = workspace.openLinkText(linktext, "Current note.md");
+			await jest.advanceTimersByTimeAsync(50);
+			await navigation;
+
+			expect(handleHeading).toHaveBeenCalledTimes(1);
+			expect(handleHeading).toHaveBeenCalledWith(file, "new heading", view);
+			expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).toBeNull();
+		}
+	);
 });

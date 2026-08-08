@@ -10,13 +10,19 @@ import {
 	resolveHeadingSettings,
 } from "./utils";
 
+interface PendingHeadingNavigation {
+	file: string;
+	heading: string;
+	createdAt: number;
+}
+
 /**
  * Link2Heading Plugin
  * Automatically creates headings when following links to non-existent headings.
  */
 export default class Link2HeadingPlugin extends Plugin {
 	settings: Link2HeadingSettings;
-	private pendingHeading: { file: string; heading: string; createdAt: number } | null = null;
+	private pendingHeading: PendingHeadingNavigation | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -30,9 +36,19 @@ export default class Link2HeadingPlugin extends Plugin {
 			});
 			const pendingHeading = parsed ? { ...parsed, createdAt: Date.now() } : null;
 			this.pendingHeading = pendingHeading;
+			const currentFile = pendingHeading
+				? this.app.workspace.getActiveViewOfType(MarkdownView)?.file
+				: null;
+			const isSameFileNavigation = currentFile && pendingHeading
+				? isPendingHeadingForFile(currentFile.path, pendingHeading)
+				: false;
 
 			try {
-				return await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+				const result = await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+				if (isSameFileNavigation && currentFile && pendingHeading) {
+					await this.processPendingHeading(currentFile, pendingHeading);
+				}
+				return result;
 			} catch (error) {
 				if (this.pendingHeading === pendingHeading) this.pendingHeading = null;
 				throw error;
@@ -45,17 +61,7 @@ export default class Link2HeadingPlugin extends Plugin {
 			this.app.workspace.on("file-open", async (file) => {
 				const pendingHeading = this.pendingHeading;
 				if (!file || !pendingHeading) return;
-
-				await new Promise((resolve) => setTimeout(resolve, 50));
-				if (this.pendingHeading !== pendingHeading) return;
-				this.pendingHeading = null;
-
-				if (!isPendingHeadingForFile(file.path, pendingHeading)) return;
-
-				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (view?.file === file) {
-					await this.handleHeadingNavigation(file, pendingHeading.heading, view);
-				}
+				await this.processPendingHeading(file, pendingHeading);
 			})
 		);
 	}
@@ -68,6 +74,19 @@ export default class Link2HeadingPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	private async processPendingHeading(file: TFile, pendingHeading: PendingHeadingNavigation) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		if (this.pendingHeading !== pendingHeading) return;
+		this.pendingHeading = null;
+
+		if (!isPendingHeadingForFile(file.path, pendingHeading)) return;
+
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view?.file === file) {
+			await this.handleHeadingNavigation(file, pendingHeading.heading, view);
+		}
 	}
 
 	private async handleHeadingNavigation(file: TFile, headingText: string, view: MarkdownView) {

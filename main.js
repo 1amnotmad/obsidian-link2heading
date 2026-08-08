@@ -614,14 +614,21 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
     this.addSettingTab(new Link2HeadingSettingTab(this.app, this));
     const originalOpenLinkText = this.app.workspace.openLinkText.bind(this.app.workspace);
     this.app.workspace.openLinkText = async (linktext, sourcePath, newLeaf, openViewState) => {
+      var _a;
       const parsed = parseLinkWithHeading(linktext, sourcePath, (linkPath, srcPath) => {
-        var _a;
-        return ((_a = this.app.metadataCache.getFirstLinkpathDest(linkPath, srcPath)) == null ? void 0 : _a.path) || null;
+        var _a2;
+        return ((_a2 = this.app.metadataCache.getFirstLinkpathDest(linkPath, srcPath)) == null ? void 0 : _a2.path) || null;
       });
       const pendingHeading = parsed ? { ...parsed, createdAt: Date.now() } : null;
       this.pendingHeading = pendingHeading;
+      const currentFile = pendingHeading ? (_a = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView)) == null ? void 0 : _a.file : null;
+      const isSameFileNavigation = currentFile && pendingHeading ? isPendingHeadingForFile(currentFile.path, pendingHeading) : false;
       try {
-        return await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+        const result = await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+        if (isSameFileNavigation && currentFile && pendingHeading) {
+          await this.processPendingHeading(currentFile, pendingHeading);
+        }
+        return result;
       } catch (error) {
         if (this.pendingHeading === pendingHeading) this.pendingHeading = null;
         throw error;
@@ -634,14 +641,7 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
       this.app.workspace.on("file-open", async (file) => {
         const pendingHeading = this.pendingHeading;
         if (!file || !pendingHeading) return;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        if (this.pendingHeading !== pendingHeading) return;
-        this.pendingHeading = null;
-        if (!isPendingHeadingForFile(file.path, pendingHeading)) return;
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
-        if ((view == null ? void 0 : view.file) === file) {
-          await this.handleHeadingNavigation(file, pendingHeading.heading, view);
-        }
+        await this.processPendingHeading(file, pendingHeading);
       })
     );
   }
@@ -652,6 +652,16 @@ var Link2HeadingPlugin = class extends import_obsidian2.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  async processPendingHeading(file, pendingHeading) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (this.pendingHeading !== pendingHeading) return;
+    this.pendingHeading = null;
+    if (!isPendingHeadingForFile(file.path, pendingHeading)) return;
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
+    if ((view == null ? void 0 : view.file) === file) {
+      await this.handleHeadingNavigation(file, pendingHeading.heading, view);
+    }
   }
   async handleHeadingNavigation(file, headingText, view) {
     const cache = this.app.metadataCache.getFileCache(file);
