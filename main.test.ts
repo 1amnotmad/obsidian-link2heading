@@ -28,18 +28,15 @@ jest.mock("obsidian", () => ({
 import Link2HeadingPlugin from "./main";
 
 type FileLike = { path: string; basename: string };
-type FileOpenHandler = (file: FileLike | null) => Promise<void>;
 
-async function loadPlugin(resolvePath: (linkPath: string) => string | null) {
-	let fileOpenHandler: FileOpenHandler | null = null;
-	const originalOpenLinkText = jest.fn(async () => undefined);
+async function loadPlugin(
+	resolvePath: (linkPath: string) => string | null,
+	originalOpenLinkText = jest.fn(async () => undefined)
+) {
 	const workspace = {
 		openLinkText: originalOpenLinkText,
-		on: jest.fn((_event: string, handler: FileOpenHandler) => {
-			fileOpenHandler = handler;
-			return {};
-		}),
 		getActiveViewOfType: jest.fn(),
+		getLeavesOfType: jest.fn(() => [] as { view: unknown }[]),
 	};
 	const app = {
 		workspace,
@@ -53,59 +50,25 @@ async function loadPlugin(resolvePath: (linkPath: string) => string | null) {
 	const plugin = new Link2HeadingPlugin(app as never, {} as never);
 	await plugin.onload();
 
-	if (!fileOpenHandler) throw new Error("file-open handler was not registered");
-	return { plugin, workspace, originalOpenLinkText, fileOpenHandler };
+	return { plugin, workspace, originalOpenLinkText };
 }
 
-describe("pending heading navigation", () => {
-	beforeEach(() => {
-		jest.useFakeTimers();
-	});
-
-	afterEach(() => {
-		jest.useRealTimers();
-	});
-
+describe("heading link navigation", () => {
 	it("lets Obsidian handle malformed encoding without throwing", async () => {
-		const { plugin, workspace, originalOpenLinkText } = await loadPlugin(() => null);
+		const { workspace, originalOpenLinkText } = await loadPlugin(() => null);
 
 		await expect(workspace.openLinkText("Note#100% done", "Source.md")).resolves.toBeUndefined();
 		expect(originalOpenLinkText).toHaveBeenCalledWith("Note#100% done", "Source.md", undefined, undefined);
-		expect((plugin as unknown as { pendingHeading: { heading: string } }).pendingHeading.heading)
-			.toBe("100% done");
 	});
 
-	it("clears stale state whenever the next navigation has no heading", async () => {
-		const { plugin, workspace } = await loadPlugin(() => null);
-
-		await workspace.openLinkText("Note#Heading", "Source.md");
-		expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).not.toBeNull();
-
-		await workspace.openLinkText("OtherNote", "Source.md");
-		expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).toBeNull();
-	});
-
-	it("does not consume a pending Note link when AnotherNote opens", async () => {
-		const { plugin, workspace, fileOpenHandler } = await loadPlugin(() => null);
-		const handleHeading = jest.spyOn(
-			plugin as unknown as { handleHeadingNavigation: () => Promise<void> },
-			"handleHeadingNavigation"
-		).mockResolvedValue(undefined);
-		const file = { path: "AnotherNote.md", basename: "AnotherNote" };
-		workspace.getActiveViewOfType.mockReturnValue({ file });
-
-		await workspace.openLinkText("Note#Heading", "Source.md");
-		const handling = fileOpenHandler(file);
-		await jest.advanceTimersByTimeAsync(50);
-		await handling;
-
-		expect(handleHeading).not.toHaveBeenCalled();
-		expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).toBeNull();
-	});
-
-	it("consumes a matching pending navigation exactly once", async () => {
-		const { plugin, workspace, fileOpenHandler } = await loadPlugin(
-			(linkPath) => `${linkPath}.md`
+	it("waits for Obsidian navigation to finish before finding the target view", async () => {
+		let finishNavigation: (() => void) | null = null;
+		const originalOpenLinkText = jest.fn(() => new Promise<void>((resolve) => {
+			finishNavigation = resolve;
+		}));
+		const { plugin, workspace } = await loadPlugin(
+			(linkPath) => `${linkPath}.md`,
+			originalOpenLinkText
 		);
 		const handleHeading = jest.spyOn(
 			plugin as unknown as { handleHeadingNavigation: () => Promise<void> },
@@ -116,18 +79,32 @@ describe("pending heading navigation", () => {
 
 		const navigation = workspace.openLinkText("Note#Heading", "Source.md");
 		workspace.getActiveViewOfType.mockReturnValue(view);
-		await navigation;
-		const handling = fileOpenHandler(file);
-		await jest.advanceTimersByTimeAsync(50);
-		await handling;
+		await Promise.resolve();
 
-		expect(handleHeading).toHaveBeenCalledTimes(1);
+		expect(handleHeading).not.toHaveBeenCalled();
+		if (!finishNavigation) throw new Error("navigation did not start");
+		finishNavigation();
+		await navigation;
+
 		expect(handleHeading).toHaveBeenCalledWith(file, "Heading", view);
-		expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).toBeNull();
+	});
+
+	it("does not suffix-match Note to AnotherNote", async () => {
+		const { plugin, workspace } = await loadPlugin(() => null);
+		const handleHeading = jest.spyOn(
+			plugin as unknown as { handleHeadingNavigation: () => Promise<void> },
+			"handleHeadingNavigation"
+		).mockResolvedValue(undefined);
+		const file = { path: "AnotherNote.md", basename: "AnotherNote" };
+		workspace.getActiveViewOfType.mockReturnValue({ file });
+
+		await workspace.openLinkText("Note#Heading", "Source.md");
+
+		expect(handleHeading).not.toHaveBeenCalled();
 	});
 
 	it.each(["#new heading", "Current note#new heading"])(
-		"handles a missing same-note heading without a file-open event: %s",
+		"handles a missing same-note heading after navigation: %s",
 		async (linktext) => {
 			const { plugin, workspace } = await loadPlugin(
 				(linkPath) => linkPath ? `${linkPath}.md` : null
@@ -140,13 +117,27 @@ describe("pending heading navigation", () => {
 			const view = { file };
 			workspace.getActiveViewOfType.mockReturnValue(view);
 
-			const navigation = workspace.openLinkText(linktext, "Current note.md");
-			await jest.advanceTimersByTimeAsync(50);
-			await navigation;
+			await workspace.openLinkText(linktext, "Current note.md");
 
 			expect(handleHeading).toHaveBeenCalledTimes(1);
 			expect(handleHeading).toHaveBeenCalledWith(file, "new heading", view);
-			expect((plugin as unknown as { pendingHeading: unknown }).pendingHeading).toBeNull();
 		}
 	);
+
+	it("finds a matching background Markdown view", async () => {
+		const { plugin, workspace } = await loadPlugin((linkPath) => `${linkPath}.md`);
+		const handleHeading = jest.spyOn(
+			plugin as unknown as { handleHeadingNavigation: () => Promise<void> },
+			"handleHeadingNavigation"
+		).mockResolvedValue(undefined);
+		const file = { path: "Note.md", basename: "Note" };
+		const MarkdownView = jest.requireMock("obsidian").MarkdownView;
+		const view = Object.assign(new MarkdownView(), { file });
+		workspace.getActiveViewOfType.mockReturnValue(null);
+		workspace.getLeavesOfType.mockReturnValue([{ view }]);
+
+		await workspace.openLinkText("Note#Heading", "Source.md");
+
+		expect(handleHeading).toHaveBeenCalledWith(file, "Heading", view);
+	});
 });

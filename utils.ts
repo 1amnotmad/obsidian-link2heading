@@ -19,13 +19,6 @@ export interface RuleMatchHeading {
 	level: number;
 }
 
-export interface PendingHeadingTarget {
-	file: string;
-	createdAt: number;
-}
-
-export const PENDING_HEADING_EXPIRY_MS = 5000;
-
 export interface InsertionResult {
 	insertionPoint: EditorPosition;
 	parentLevel: number | null;
@@ -60,24 +53,17 @@ function normalizePath(path: string): string {
 	return normalizeSlashes(path).replace(/\.md$/, "");
 }
 
-/** Checks that a pending heading navigation is fresh and belongs to the opened file. */
-export function isPendingHeadingForFile(
-	filePath: string,
-	pending: PendingHeadingTarget,
-	now = Date.now()
-): boolean {
-	const age = now - pending.createdAt;
-	if (age < 0 || age > PENDING_HEADING_EXPIRY_MS) return false;
-
+/** Checks whether a Markdown file is the target of a parsed heading link. */
+export function isHeadingTargetFile(filePath: string, targetPath: string): boolean {
 	const openedPath = normalizePath(filePath);
-	const pendingPath = normalizePath(pending.file);
-	if (!openedPath || !pendingPath) return false;
-	if (openedPath === pendingPath) return true;
+	const target = normalizePath(targetPath);
+	if (!openedPath || !target) return false;
+	if (openedPath === target) return true;
 
 	// Unresolved links may only have a basename. Compare the whole basename,
 	// rather than using a suffix match that lets AnotherNote match Note.
-	if (pendingPath.includes("/")) return false;
-	return openedPath.slice(openedPath.lastIndexOf("/") + 1) === pendingPath;
+	if (target.includes("/")) return false;
+	return openedPath.slice(openedPath.lastIndexOf("/") + 1) === target;
 }
 
 function normalizeFolder(folder: string): string {

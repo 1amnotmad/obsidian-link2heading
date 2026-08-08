@@ -42,7 +42,7 @@ link2heading/
 
 The plugin uses a simple architecture:
 
-1. **Link Interception** — Monkey-patches `workspace.openLinkText` to capture heading targets before navigation
+1. **Link Interception** — Monkey-patches `workspace.openLinkText` to capture heading targets and await completed navigation
 2. **Heading Detection** — Uses Obsidian's `resolveSubpath` to check if heading exists
 3. **Heading Creation** — Inserts markdown heading at the appropriate location
 
@@ -50,7 +50,7 @@ The plugin uses a simple architecture:
 
 - **Monkey-patching** — Chosen over DOM event listeners because it works for both click and keyboard navigation (Ctrl+Enter)
 - **Pure functions in utils.ts** — Enables unit testing without mocking Obsidian APIs
-- **50ms delay after file-open** — Ensures the view is ready before processing
+- **Completed navigation** — Waits for Obsidian to finish opening the link, then finds the matching active or background Markdown view
 
 ## Testing
 
@@ -61,7 +61,7 @@ Tests are written with Jest and cover the core plugin flow and pure utility func
 - `findInsertionPoint` — Insertion point calculation
 - `buildHeadingText` — Markdown generation
 - `parseLinkWithHeading` — Link parsing
-- Pending navigation state and target-file matching
+- Completed navigation and exact target-file matching
 
 Run tests:
 ```bash

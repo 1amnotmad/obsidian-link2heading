@@ -12,8 +12,7 @@ import {
 	calculateHeadingLevel,
 	findInsertionPoint,
 	buildHeadingText,
-	isPendingHeadingForFile,
-	PENDING_HEADING_EXPIRY_MS,
+	isHeadingTargetFile,
 	parseLinkWithHeading,
 	parseHeadingValue,
 	resolveHeadingSettings,
@@ -809,48 +808,24 @@ describe("parseLinkWithHeading", () => {
 	});
 });
 
-describe("isPendingHeadingForFile", () => {
-	const createdAt = 1000;
-
+describe("isHeadingTargetFile", () => {
 	it.each([
 		["Projects/Note.md", "Projects/Note"],
 		["Projects\\Note.md", " /Projects/Note.md "],
 		["Projects/Note.md", "Note"],
-	])("matches normalized exact paths and unresolved basenames", (filePath, pendingFile) => {
-		expect(isPendingHeadingForFile(
-			filePath,
-			{ file: pendingFile, createdAt },
-			createdAt
-		)).toBe(true);
+	])("matches normalized exact paths and unresolved basenames", (filePath, targetPath) => {
+		expect(isHeadingTargetFile(filePath, targetPath)).toBe(true);
 	});
 
 	it.each([
 		["AnotherNote.md", "Note"],
 		["Folder/AnotherNote.md", "Note.md"],
 		["Archive/Note.md", "Projects/Note"],
-	])("does not suffix-match or ignore a resolved folder: %s / %s", (filePath, pendingFile) => {
-		expect(isPendingHeadingForFile(
-			filePath,
-			{ file: pendingFile, createdAt },
-			createdAt
-		)).toBe(false);
+	])("does not suffix-match or ignore a resolved folder: %s / %s", (filePath, targetPath) => {
+		expect(isHeadingTargetFile(filePath, targetPath)).toBe(false);
 	});
 
-	it("rejects expired, future, and empty pending destinations", () => {
-		expect(isPendingHeadingForFile(
-			"Note.md",
-			{ file: "Note", createdAt },
-			createdAt + PENDING_HEADING_EXPIRY_MS + 1
-		)).toBe(false);
-		expect(isPendingHeadingForFile(
-			"Note.md",
-			{ file: "Note", createdAt },
-			createdAt - 1
-		)).toBe(false);
-		expect(isPendingHeadingForFile(
-			"Note.md",
-			{ file: "", createdAt },
-			createdAt
-		)).toBe(false);
+	it("rejects an empty target", () => {
+		expect(isHeadingTargetFile("Note.md", "")).toBe(false);
 	});
 });
