@@ -1,6 +1,14 @@
 import { Plugin, MarkdownView, TFile, resolveSubpath, Editor, HeadingCache } from "obsidian";
-import { Link2HeadingSettings, DEFAULT_SETTINGS, Link2HeadingSettingTab } from "./settings";
-import { calculateHeadingLevel, findInsertionPoint, buildHeadingText, parseLinkWithHeading } from "./utils";
+import { Link2HeadingSettings, Link2HeadingSettingTab, parseSettingsData } from "./settings";
+import type { HeadingRuleBehavior } from "./settings";
+import {
+	calculateHeadingLevel,
+	findInsertionPoint,
+	buildHeadingText,
+	isHeadingTargetFile,
+	parseLinkWithHeading,
+	resolveHeadingSettings,
+} from "./utils";
 
 /**
  * Link2Heading Plugin
@@ -19,13 +27,14 @@ export default class Link2HeadingPlugin extends Plugin {
 			const parsed = parseLinkWithHeading(linktext, sourcePath, (linkPath, srcPath) => {
 				return this.app.metadataCache.getFirstLinkpathDest(linkPath, srcPath)?.path || null;
 			});
-			await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+			const result = await originalOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
 
-			if (!parsed) return;
+			if (!parsed) return result;
 			const view = this.findMarkdownView(parsed.file);
 			if (view?.file) {
 				await this.handleHeadingNavigation(view.file, parsed.heading, view);
 			}
+			return result;
 		};
 		this.register(() => { this.app.workspace.openLinkText = originalOpenLinkText; });
 	}
@@ -33,7 +42,7 @@ export default class Link2HeadingPlugin extends Plugin {
 	onunload() {}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings = parseSettingsData(await this.loadData());
 	}
 
 	async saveSettings() {
@@ -41,8 +50,7 @@ export default class Link2HeadingPlugin extends Plugin {
 	}
 
 	private findMarkdownView(filePath: string): MarkdownView | null {
-		const isExpectedFile = (file: TFile) => filePath === file.path ||
-			file.path.endsWith(filePath + ".md") || filePath === file.basename;
+		const isExpectedFile = (file: TFile) => isHeadingTargetFile(file.path, filePath);
 		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (activeView?.file && isExpectedFile(activeView.file)) return activeView;
 
@@ -58,22 +66,34 @@ export default class Link2HeadingPlugin extends Plugin {
 		const cache = this.app.metadataCache.getFileCache(file);
 		if (!cache || resolveSubpath(cache, "#" + headingText)) return;
 
+		const behavior = resolveHeadingSettings(
+			file,
+			{ frontmatter: cache.frontmatter, headings: cache.headings },
+			this.settings.rules,
+			this.settings.fallback
+		);
+		if (!behavior) return;
+
 		const editor = view.editor;
-		if (editor) await this.createHeading(headingText, editor, cache.headings);
+		if (editor) await this.createHeading(headingText, editor, cache.headings, behavior);
 	}
 
-	private async createHeading(headingText: string, editor: Editor, existingHeadings: HeadingCache[] | undefined) {
-		const insertionResult = findInsertionPoint(editor, existingHeadings, this.settings);
+	private async createHeading(
+		headingText: string,
+		editor: Editor,
+		existingHeadings: HeadingCache[] | undefined,
+		behavior: HeadingRuleBehavior
+	) {
+		const insertionResult = findInsertionPoint(editor, existingHeadings, behavior);
 		if (!insertionResult) return;
 
 		const { insertionPoint, parentLevel, needsParentCreation } = insertionResult;
-		const level = calculateHeadingLevel(this.settings.headingLevel, parentLevel);
-		const parentLevelNum = this.settings.headingLevel === "auto" ? 2 : Math.max(1, level - 1);
+		const level = calculateHeadingLevel(behavior.headingLevel, parentLevel);
 		const prevLineContent = insertionPoint.line > 0 ? editor.getLine(insertionPoint.line - 1) : "";
 
 		const { text, linesAdded } = buildHeadingText(
-			headingText, level, this.settings.parentHeading || null,
-			parentLevelNum, needsParentCreation, prevLineContent
+			headingText, level, behavior.parentHeading || null,
+			needsParentCreation, prevLineContent
 		);
 
 		editor.replaceRange(text, insertionPoint);

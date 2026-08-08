@@ -1,8 +1,8 @@
 {
 	"id": "link2heading",
 	"name": "Link2Heading",
-	"version": "1.0.1",
-	"minAppVersion": "1.0.0",
+	"version": "2.0.0",
+	"minAppVersion": "1.4.10",
 	"description": "Automatically creates headings when following links to non-existent headings",
 	"author": "1amnotmad",
 	"authorUrl": "https://github.com/1amnotmad",

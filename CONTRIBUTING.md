@@ -2,13 +2,15 @@
 
 ## Development Setup
 
+Development requires Node.js 22 or newer.
+
 ```bash
 # Clone the repository
 git clone https://github.com/1amnotmad/obsidian-link2heading.git
 cd obsidian-link2heading
 
-# Install dependencies
-npm install
+# Install the locked dependencies
+npm ci
 
 # Build for development (watch mode)
 npm run dev
@@ -28,6 +30,7 @@ npm test -- --coverage
 ```
 link2heading/
 ├── main.ts          # Plugin entry point and core logic
+├── main.test.ts     # Core navigation integration tests
 ├── settings.ts      # Settings interface and UI
 ├── utils.ts         # Pure utility functions (testable)
 ├── utils.test.ts    # Unit tests
@@ -39,7 +42,7 @@ link2heading/
 
 The plugin uses a simple architecture:
 
-1. **Link Interception** — Monkey-patches `workspace.openLinkText` to capture heading targets before navigation
+1. **Link Interception** — Monkey-patches `workspace.openLinkText` to capture heading targets and await completed navigation
 2. **Heading Detection** — Uses Obsidian's `resolveSubpath` to check if heading exists
 3. **Heading Creation** — Inserts markdown heading at the appropriate location
 
@@ -47,17 +50,18 @@ The plugin uses a simple architecture:
 
 - **Monkey-patching** — Chosen over DOM event listeners because it works for both click and keyboard navigation (Ctrl+Enter)
 - **Pure functions in utils.ts** — Enables unit testing without mocking Obsidian APIs
-- **50ms delay after file-open** — Ensures the view is ready before processing
+- **Completed navigation** — Waits for Obsidian to finish opening the link, then finds the matching active or background Markdown view
 
 ## Testing
 
-Tests are written with Jest and cover the pure utility functions:
+Tests are written with Jest and cover the core plugin flow and pure utility functions, including:
 
 - `getLineAfterFrontmatter` — Frontmatter detection
 - `calculateHeadingLevel` — Heading level logic
 - `findInsertionPoint` — Insertion point calculation
 - `buildHeadingText` — Markdown generation
 - `parseLinkWithHeading` — Link parsing
+- Completed navigation and exact target-file matching
 
 Run tests:
 ```bash
